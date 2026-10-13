@@ -96,10 +96,8 @@ class DanceCacheApp:
 
         row4 = ttk.Frame(cfg)
         row4.pack(fill=tk.X, pady=(6, 0))
-        self.ytcache_var = tk.BooleanVar(value=bool(dc._config.get("enable_youtube_cache", True)))
-        ttk.Checkbutton(row4, text="启用YouTube源缓存", variable=self.ytcache_var).pack(side=tk.LEFT)
         self.ytperm_var = tk.BooleanVar(value=bool(dc._config.get("youtube_permanent", True)))
-        ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var).pack(side=tk.LEFT)
         self.cdnperm_var = tk.BooleanVar(value=bool(dc._config.get("cdn_permanent", True)))
         ttk.Checkbutton(row4, text="其他视频永久保存", variable=self.cdnperm_var).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(row4, text="(永久保存=按编号存到曲库目录；关掉则只进普通缓存)",
@@ -109,14 +107,21 @@ class DanceCacheApp:
         lib.pack(fill=tk.X, padx=8, pady=(0, 4))
         self.rebuild_btn = ttk.Button(lib, text="重建曲库映射", command=self.rebuild_mapping)
         self.rebuild_btn.pack(side=tk.LEFT)
-        self.verify_btn = ttk.Button(lib, text="校验曲库完整性", command=self.verify_library)
-        self.verify_btn.pack(side=tk.LEFT, padx=4)
         self.lib_cancel_btn = ttk.Button(lib, text="取消", command=self.cancel_download_all, state=tk.DISABLED)
         self.lib_cancel_btn.pack(side=tk.LEFT, padx=4)
         self.lib_bar = ttk.Progressbar(lib, length=300, mode="determinate")
         self.lib_bar.pack(side=tk.LEFT, padx=8)
         self.lib_label = ttk.Label(lib, text="未开始")
         self.lib_label.pack(side=tk.LEFT)
+
+        adv = ttk.LabelFrame(self.root, text="高级设置", padding=6)
+        adv.pack(fill=tk.X, padx=8, pady=(0, 4))
+        self.ytcache_var = tk.BooleanVar(value=bool(dc._config.get("enable_youtube_cache", True)))
+        ttk.Checkbutton(adv, text="启用YouTube源缓存", variable=self.ytcache_var).pack(side=tk.LEFT)
+        ttk.Label(adv, text="(建议开启，关闭后youtube视频只能在线加载)",
+                  foreground="gray").pack(side=tk.LEFT, padx=(2, 12))
+        self.verify_btn = ttk.Button(adv, text="校验曲库完整性", command=self.verify_library)
+        self.verify_btn.pack(side=tk.LEFT)
 
         qf = ttk.LabelFrame(self.root, text="当前队列", padding=4)
         qf.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
