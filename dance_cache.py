@@ -60,7 +60,7 @@ DEFAULT_CONFIG = {
     "preferred_cdn_ip": "",
     "enable_youtube_cache": True,
     "youtube_permanent": True,
-    "cdn_permanent": False,
+    "cdn_permanent": True,
 }
 
 _config = {}
@@ -243,35 +243,13 @@ def in_library(song_id):
     return os.path.exists(p) and os.path.getsize(p) > 0
 
 
-def cdn_perm_dir():
-    return os.path.join(_config["cache_dir"], "cdn")
-
-
-def cdn_perm_local_path(filename):
-    """其他视频永久保存区（缓存/cdn/）：按文件名或歌曲编号查找"""
-    d = cdn_perm_dir()
-    p = os.path.join(d, filename)
-    if os.path.exists(p) and os.path.getsize(p) > 0:
-        return p
-    with _mapping_lock:
-        sid = _reverse_mapping.get(filename)
-    if sid is not None:
-        p = os.path.join(d, f"{sid}.mp4")
-        if os.path.exists(p) and os.path.getsize(p) > 0:
-            return p
-    return None
-
-
 def local_path_for(filename):
-    """按文件名找本地文件：先缓存目录，再永久保存区，最后按映射查曲库；yt_{id}.mp4 是 YouTube 源歌曲的虚拟文件名"""
+    """按文件名找本地文件：先缓存目录，再按映射查曲库；yt_{id}.mp4 是 YouTube 源歌曲的虚拟文件名"""
     m = YT_FILENAME_RE.match(filename)
     if m:
         return yt_local_path(int(m.group(1)))
     p = cache_path(filename)
     if os.path.exists(p) and os.path.getsize(p) > 0:
-        return p
-    p = cdn_perm_local_path(filename)
-    if p:
         return p
     with _mapping_lock:
         sid = _reverse_mapping.get(filename)
@@ -288,18 +266,13 @@ def is_cached(filename):
 
 
 def target_path(filename, song_id=None):
-    """新下载的保存位置：曲库模式下按编号命名进曲库；开启"其他视频永久保存"则进
-    缓存/cdn/ 永久保存区（不参与清理）；否则进缓存目录按文件名命名"""
+    """新下载的保存位置：曲库模式且"其他视频永久保存"开启时按编号命名进曲库，
+    否则进缓存目录按文件名命名"""
     if song_id is None:
         with _mapping_lock:
             song_id = _reverse_mapping.get(filename)
-    if song_id is not None and library_enabled():
+    if song_id is not None and library_enabled() and _config.get("cdn_permanent", True):
         return library_path(song_id)
-    if _config.get("cdn_permanent", False):
-        d = cdn_perm_dir()
-        os.makedirs(d, exist_ok=True)
-        name = f"{song_id}.mp4" if song_id is not None else filename
-        return os.path.join(d, name)
     return cache_path(filename)
 
 
