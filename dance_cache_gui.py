@@ -100,7 +100,9 @@ class DanceCacheApp:
         ttk.Checkbutton(row4, text="启用YouTube源缓存", variable=self.ytcache_var).pack(side=tk.LEFT)
         self.ytperm_var = tk.BooleanVar(value=bool(dc._config.get("youtube_permanent", True)))
         ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(row4, text="(YouTube源在播放时自动录流入库；永久保存=存到 缓存/yt/编号.mp4，不受清空和上限影响)",
+        self.cdnperm_var = tk.BooleanVar(value=bool(dc._config.get("cdn_permanent", False)))
+        ttk.Checkbutton(row4, text="其他视频永久保存", variable=self.cdnperm_var).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(row4, text="(永久保存=存到 缓存/yt/ 或 缓存/cdn/，不受清空和上限影响)",
                   foreground="gray").pack(side=tk.LEFT, padx=6)
 
         lib = ttk.LabelFrame(self.root, text="曲库工具", padding=6)
@@ -325,6 +327,7 @@ class DanceCacheApp:
         dc._config["preferred_cdn_ip"] = ip
         dc._config["enable_youtube_cache"] = bool(self.ytcache_var.get())
         dc._config["youtube_permanent"] = bool(self.ytperm_var.get())
+        dc._config["cdn_permanent"] = bool(self.cdnperm_var.get())
         dc.save_config()
         msg = "设置已保存" + (f"，曲库目录: {lib}" if lib else "")
         if ip:
