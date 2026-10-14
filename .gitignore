@@ -6,7 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
-!PyPyDance Video Cache.spec
+!VRChat PyPyDance助手.spec
 
 # 运行时生成（配置 / 映射表 / 缓存 / 日志）
 config.json
