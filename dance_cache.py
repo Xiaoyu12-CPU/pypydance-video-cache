@@ -14,8 +14,10 @@ V2.0：劫持 api.pypy.dance 的 302 重定向（纯 HTTP，零证书），YouTu
 
 import ctypes
 import http.client
+import ipaddress
 import json
 import os
+import random
 import re
 import select
 import socket
@@ -25,7 +27,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -1123,54 +1125,117 @@ SPEEDTEST_BYTES = 8 * 1048576
 def _pick_test_file():
     with _mapping_lock:
         for v in _mapping.values():
-            if v:
+            if v and not v.startswith("yt:"):
                 return v
     return "KhlUAAndf98.mp4"
 
 
+def _download_test(ip, filename, nbytes, timeout=20):
+    """从指定 CF IP 下载 nbytes 测速，返回 (MB/s, None) 或 (None, 错误)"""
+    try:
+        conn = http.client.HTTPConnection(ip, 80, timeout=timeout)
+        t0 = time.time()
+        conn.request("GET", "/" + filename, headers={
+            "Host": "cdn.pypy.dance",
+            "Range": f"bytes=0-{nbytes - 1}",
+            "Accept-Encoding": "identity",
+        })
+        resp = conn.getresponse()
+        if resp.status not in (200, 206):
+            err = f"HTTP {resp.status}"
+            resp.read()
+            conn.close()
+            return None, err
+        got = 0
+        while True:
+            chunk = resp.read(256 * 1024)
+            if not chunk:
+                break
+            got += len(chunk)
+        dt = max(time.time() - t0, 0.01)
+        conn.close()
+        return got / 1048576 / dt, None
+    except Exception as e:
+        return None, str(e)
+
+
 def speed_test_ips():
-    """对所有候选 CDN IP 各下载 8MB 测速，逐个 emit speedtest_result，最后 emit speedtest_done"""
+    """快速扫描：对当前 DNS 分配到的候选 CDN IP 各下载 8MB 测速"""
     filename = _pick_test_file()
     candidates = ordered_ips("cdn.pypy.dance")
     if not candidates:
         log("测速失败: 还没有解析到 CDN IP，请先启动服务")
         emit("speedtest_done")
         return
-    log(f"开始测速（每个 IP 下载 {SPEEDTEST_BYTES // 1048576}MB 取样）...")
+    log(f"快速扫描开始（{len(candidates)} 个当前分配的节点，每个下载 {SPEEDTEST_BYTES // 1048576}MB 取样）...")
     results = []
     for ip in candidates:
-        mbps = None
-        err = None
-        try:
-            conn = http.client.HTTPConnection(ip, 80, timeout=20)
-            conn.request("GET", "/" + filename, headers={
-                "Host": "cdn.pypy.dance",
-                "Range": f"bytes=0-{SPEEDTEST_BYTES - 1}",
-                "Accept-Encoding": "identity",
-            })
-            resp = conn.getresponse()
-            if resp.status not in (200, 206):
-                err = f"HTTP {resp.status}"
-                resp.read()
-            else:
-                t0 = time.time()
-                got = 0
-                while True:
-                    chunk = resp.read(256 * 1024)
-                    if not chunk:
-                        break
-                    got += len(chunk)
-                dt = max(time.time() - t0, 0.01)
-                mbps = got / 1048576 / dt
-            conn.close()
-        except Exception as e:
-            err = str(e)
+        mbps, err = _download_test(ip, filename, SPEEDTEST_BYTES)
         results.append({"ip": ip, "mbps": mbps, "error": err})
         if mbps is not None:
             log(f"测速 {ip}: {mbps:.2f} MB/s")
         else:
             log(f"测速 {ip}: 失败 ({err})")
         emit("speedtest_result", ip=ip, mbps=mbps, error=err)
+    emit("speedtest_done", results=results)
+
+
+# Cloudflare 官方 IPv4 段（https://www.cloudflare.com/ips-v4）
+CF_IP_RANGES = [
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/12",
+    "172.64.0.0/13", "131.0.72.0/22",
+]
+
+FULLSCAN_SAMPLES = 300            # 从全段随机抽样探测的 IP 数
+FULLSCAN_TOP = 10                 # 初筛后进入完整测速的数量
+FULLSCAN_PROBE_BYTES = 64 * 1024  # 初筛每个 IP 的下载量
+
+
+def _sample_cf_ips(n):
+    """按段大小加权，从 Cloudflare 全部 IPv4 段随机抽 n 个不重复 IP"""
+    nets = [ipaddress.ip_network(r) for r in CF_IP_RANGES]
+    weights = [net.num_addresses for net in nets]
+    ips = set()
+    while len(ips) < n:
+        net = random.choices(nets, weights=weights)[0]
+        ip = net.network_address + random.randrange(net.num_addresses)
+        ips.add(str(ipaddress.ip_address(ip)))
+    return list(ips)
+
+
+def full_scan_ips():
+    """全部扫描：从 Cloudflare 全段随机抽样快速探测，筛出最快的一批再做 8MB 下载测速"""
+    filename = _pick_test_file()
+    samples = _sample_cf_ips(FULLSCAN_SAMPLES)
+    log(f"全部扫描：从 Cloudflare 全段随机抽 {len(samples)} 个 IP 初筛（每个试下 {FULLSCAN_PROBE_BYTES // 1024}KB）...")
+    probes = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=50) as pool:
+        futures = {pool.submit(_download_test, ip, filename, FULLSCAN_PROBE_BYTES, 4): ip for ip in samples}
+        for fut in as_completed(futures):
+            mbps, _ = fut.result()
+            done += 1
+            if mbps is not None:
+                probes.append({"ip": futures[fut], "mbps": mbps})
+            if done % 50 == 0 or done == len(samples):
+                log(f"全部扫描初筛进度: {done}/{len(samples)}（可用 {len(probes)}）")
+    if not probes:
+        log("全部扫描失败: 抽样 IP 全部不可用，请检查网络（如开着代理请关闭后重试）")
+        emit("speedtest_done")
+        return
+    top = sorted(probes, key=lambda r: -r["mbps"])[:FULLSCAN_TOP]
+    log(f"初筛完成，对最快 {len(top)} 个节点做 {SPEEDTEST_BYTES // 1048576}MB 完整测速...")
+    results = []
+    for r in top:
+        mbps, err = _download_test(r["ip"], filename, SPEEDTEST_BYTES)
+        results.append({"ip": r["ip"], "mbps": mbps, "error": err})
+        if mbps is not None:
+            log(f"测速 {r['ip']}: {mbps:.2f} MB/s")
+        else:
+            log(f"测速 {r['ip']}: 失败 ({err})")
+        emit("speedtest_result", ip=r["ip"], mbps=mbps, error=err)
     emit("speedtest_done", results=results)
 
 

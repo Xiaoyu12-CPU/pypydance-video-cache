@@ -89,9 +89,11 @@ class DanceCacheApp:
         ttk.Label(row3, text="优选CDN IP:").pack(side=tk.LEFT)
         self.cdnip_var = tk.StringVar(value=dc._config.get("preferred_cdn_ip", ""))
         ttk.Entry(row3, width=16, textvariable=self.cdnip_var).pack(side=tk.LEFT, padx=(2, 4))
-        self.speedtest_btn = ttk.Button(row3, text="测速并选最快IP", command=self.speed_test)
+        self.speedtest_btn = ttk.Button(row3, text="快速扫描", command=self.speed_test)
         self.speedtest_btn.pack(side=tk.LEFT)
-        ttk.Label(row3, text="(CloudflareSpeedTest 测出的最快IP填这里；留空用默认节点，失效自动回落)",
+        self.fullscan_btn = ttk.Button(row3, text="全部扫描", command=self.full_scan)
+        self.fullscan_btn.pack(side=tk.LEFT, padx=4)
+        ttk.Label(row3, text="(快速=当前分配的节点里选最快；全部=Cloudflare全段抽样，更准但需几分钟)",
                   foreground="gray").pack(side=tk.LEFT, padx=6)
 
         row4 = ttk.Frame(cfg)
@@ -226,6 +228,7 @@ class DanceCacheApp:
             )
         elif kind == "speedtest_done":
             self.speedtest_btn.config(state=tk.NORMAL)
+            self.fullscan_btn.config(state=tk.NORMAL)
             results = [r for r in data.get("results", []) if r["mbps"] is not None]
             if not results:
                 messagebox.showwarning("测速", "所有候选 IP 都测速失败，请检查网络")
@@ -371,7 +374,15 @@ class DanceCacheApp:
             messagebox.showwarning("测速", "请先启动服务（需要解析 CDN IP）")
             return
         self.speedtest_btn.config(state=tk.DISABLED)
+        self.fullscan_btn.config(state=tk.DISABLED)
         threading.Thread(target=dc.speed_test_ips, daemon=True).start()
+
+    def full_scan(self):
+        if not messagebox.askyesno("全部扫描", "将从 Cloudflare 全部 IP 段随机抽样 300 个节点进行测速，大约需要几分钟，期间请保持网络通畅（建议关闭代理）。开始吗？"):
+            return
+        self.speedtest_btn.config(state=tk.DISABLED)
+        self.fullscan_btn.config(state=tk.DISABLED)
+        threading.Thread(target=dc.full_scan_ips, daemon=True).start()
 
     def on_close(self):
         dc.cancel_library_download()
