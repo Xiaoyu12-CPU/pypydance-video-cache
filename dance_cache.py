@@ -114,6 +114,7 @@ def wait_rate_limit():
 #          rebuild_progress / rebuild_done / verify_progress / verify_done
 
 _listeners = []
+_last_queue_items = []  # 最近一次点歌队列（用于下载完成后刷新队列缓存状态）
 
 
 def add_listener(fn):
@@ -126,6 +127,8 @@ def emit(kind, **data):
             fn(kind, data)
         except Exception:
             pass
+    if kind == "download_done":
+        refresh_queue_state()
 
 
 def log(msg):
@@ -1667,6 +1670,13 @@ def describe_queue(items):
     return result
 
 
+def refresh_queue_state():
+    """重新计算并推送当前队列的缓存状态（队列内容不变时 VRChat 不会再写日志，
+    否则下载完成的歌状态会一直停在"下载中"）"""
+    if _last_queue_items:
+        emit("queue", items=describe_queue(_last_queue_items))
+
+
 def submit_preload(items):
     count = int(_config["preload_count"]) + 1
     for it in items[:count]:
@@ -1740,6 +1750,8 @@ class LogWatcher(threading.Thread):
             self._on_queue(items)
 
     def _on_queue(self, items):
+        global _last_queue_items
+        _last_queue_items = items or []
         if not items:
             emit("queue", items=[])
             return
