@@ -1,4 +1,4 @@
-# PyPyDance Video Cache
+# VRChat PyPyDance助手
 
 VRChat PyPyDance 跳舞房视频本地缓存工具（Windows）
 
@@ -25,7 +25,7 @@ PyPyDance 跳舞房的视频存在国外 Cloudflare 服务器上，国内直连�
 
 ## 下载与使用
 
-到 [Releases](../../releases) 下载 `PyPyDance Video Cache.exe`，**右键以管理员身份运行**（或双击后在 UAC 窗口点"是"），状态变为"● 运行中"后进跳舞房正常点歌即可。
+到 [Releases](../../releases) 下载 `VRChat PyPyDance助手.exe`，**右键以管理员身份运行**（或双击后在 UAC 窗口点"是"），状态变为"● 运行中"后进跳舞房正常点歌即可。
 
 详细图文教程见 [使用教程.md](使用教程.md)。
 
@@ -45,7 +45,7 @@ python dance_cache.py
 
 ```bash
 pip install pyinstaller
-python -m PyInstaller --noconfirm --onefile --windowed --name "PyPyDance Video Cache" dance_cache_gui.py
+python -m PyInstaller --noconfirm --onefile --windowed --name "VRChat PyPyDance助手" dance_cache_gui.py
 # 产物在 dist/ 目录
 ```
 

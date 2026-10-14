@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PyPyDance Video Cache（核心模块 + 命令行模式）
+PyPyDance Video Cache → VRChat PyPyDance助手（核心模块 + 命令行模式）
 原理：hosts 劫持 cdn.pypy.dance -> 本地 HTTP 服务(80 端口) -> 命中缓存直接返回 / 未命中边下边存
 同时监听 VRChat 日志中的 [PyPyDanceQueue] 点歌队列，提前下载即将播放的视频。
 曲库模式：设置 library_dir 后，视频按歌曲编号命名（如 3528.mp4）永久保存在曲库目录；
 播放时本地有就直接加载，没有就下载后新增进曲库。
-V2.0：劫持 api.pypy.dance 的 302 重定向（纯 HTTP，零证书），YouTube 源歌曲在播放时
+YouTube 源：劫持 api.pypy.dance 的 302 重定向（纯 HTTP，零证书），YouTube 源歌曲在播放时
 从 VRChat 日志捕获解析后的直链自动录流入库；Unity 的 https 歌单/封面请求由 443 TCP 隧道透传。
 需要管理员权限（修改 hosts、绑定 80/443 端口）。
 图形界面见 dance_cache_gui.py。
@@ -1862,7 +1862,7 @@ def _cli_listener(kind, data):
 
 def main():
     add_listener(_cli_listener)
-    log("=== PyPyDance Video Cache V2.0（命令行模式） ===")
+    log("=== VRChat PyPyDance助手 V1.0（命令行模式） ===")
     log("Bilibili @鲨鲨比亚Sharkspeare")
     if os.name != "nt":
         log("本工具仅支持 Windows")
