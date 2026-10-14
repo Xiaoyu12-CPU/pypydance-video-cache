@@ -438,19 +438,53 @@ def resolve_real_ips():
             log(f"警告: 无法解析 {host}，该域名回源将不可用")
 
 
+DOH_PROVIDERS = (
+    "https://dns.alidns.com/resolve",
+    "https://dns.google/resolve",
+    "https://cloudflare-dns.com/dns-query",
+)
+
+
+def _doh_query(doh, host):
+    try:
+        ctx = ssl.create_default_context()
+        u = urllib.parse.urlparse(doh)
+        conn = http.client.HTTPSConnection(u.hostname, 443, timeout=8, context=ctx)
+        conn.request("GET", f"{u.path}?name={host}&type=A", headers={"Accept": "application/dns-json"})
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+        conn.close()
+        return [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
+    except Exception:
+        return []
+
+
 def doh_lookup(host):
-    for doh in ("https://dns.alidns.com/resolve", "https://dns.google/resolve"):
-        try:
-            ctx = ssl.create_default_context()
-            conn = http.client.HTTPSConnection(urllib.parse.urlparse(doh).hostname, 443, timeout=8, context=ctx)
-            conn.request("GET", f"/resolve?name={host}&type=A", headers={"Accept": "application/dns-json"})
-            resp = conn.getresponse()
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-            conn.close()
-            return [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
-        except Exception:
-            continue
+    for doh in DOH_PROVIDERS:
+        ips = _doh_query(doh, host)
+        if ips:
+            return ips
     return []
+
+
+def gather_candidate_ips(host, rounds=2):
+    """系统 DNS + 多个 DoH 服务器多轮查询，合并去重候选 IP（不同递归出口常被分配到不同节点组）"""
+    ips = []
+    try:
+        _, _, sys_ips = socket.gethostbyname_ex(host)
+        ips.extend(sys_ips)
+    except Exception:
+        pass
+    for _ in range(rounds):
+        for doh in DOH_PROVIDERS:
+            ips.extend(_doh_query(doh, host))
+    seen = set()
+    out = []
+    for ip in ips:
+        if ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
 
 
 # ---------------- hosts 管理 ----------------
@@ -1160,14 +1194,18 @@ def _download_test(ip, filename, nbytes, timeout=20):
 
 
 def speed_test_ips():
-    """快速扫描：对当前 DNS 分配到的候选 CDN IP 各下载 8MB 测速"""
+    """快速扫描：合并系统 DNS 和多个 DoH 服务器解析到的候选节点，各下载 8MB 测速"""
     filename = _pick_test_file()
-    candidates = ordered_ips("cdn.pypy.dance")
+    candidates = gather_candidate_ips("cdn.pypy.dance")
+    pref = (_config.get("preferred_cdn_ip") or "").strip()
+    if pref:
+        candidates = [pref] + [ip for ip in candidates if ip != pref]
+    candidates = candidates[:16]
     if not candidates:
-        log("测速失败: 还没有解析到 CDN IP，请先启动服务")
+        log("测速失败: 无法解析 CDN IP，请检查网络（如开着代理请关闭后重试）")
         emit("speedtest_done")
         return
-    log(f"快速扫描开始（{len(candidates)} 个当前分配的节点，每个下载 {SPEEDTEST_BYTES // 1048576}MB 取样）...")
+    log(f"快速扫描开始（系统DNS+DoH合并共 {len(candidates)} 个节点，每个下载 {SPEEDTEST_BYTES // 1048576}MB 取样）...")
     results = []
     for ip in candidates:
         mbps, err = _download_test(ip, filename, SPEEDTEST_BYTES)

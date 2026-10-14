@@ -370,9 +370,6 @@ class DanceCacheApp:
         dc.verify_library()
 
     def speed_test(self):
-        if not dc.is_running():
-            messagebox.showwarning("测速", "请先启动服务（需要解析 CDN IP）")
-            return
         self.speedtest_btn.config(state=tk.DISABLED)
         self.fullscan_btn.config(state=tk.DISABLED)
         threading.Thread(target=dc.speed_test_ips, daemon=True).start()
