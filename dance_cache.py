@@ -467,8 +467,16 @@ def doh_lookup(host):
     return []
 
 
+def _is_public_ip(ip):
+    """是否公网 IP（过滤 hosts 劫持产生的 127.0.0.1 等非公网结果）"""
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
+
+
 def gather_candidate_ips(host, rounds=2):
-    """系统 DNS + 多个 DoH 服务器多轮查询，合并去重候选 IP（不同递归出口常被分配到不同节点组）"""
+    """系统 DNS + 多个 DoH 服务器多轮查询，合并去重候选公网 IP（不同递归出口常被分配到不同节点组）"""
     ips = []
     try:
         _, _, sys_ips = socket.gethostbyname_ex(host)
@@ -481,7 +489,7 @@ def gather_candidate_ips(host, rounds=2):
     seen = set()
     out = []
     for ip in ips:
-        if ip not in seen:
+        if ip not in seen and _is_public_ip(ip):
             seen.add(ip)
             out.append(ip)
     return out
@@ -540,7 +548,7 @@ def ordered_ips(host):
     """cdn.pypy.dance 优先使用用户设置的优选 IP，失效时自动回落到默认解析结果"""
     ips = list(_origin_ips.get(host, []))
     pref = (_config.get("preferred_cdn_ip") or "").strip()
-    if pref and host == "cdn.pypy.dance":
+    if pref and _is_public_ip(pref) and host == "cdn.pypy.dance":
         ips = [pref] + [ip for ip in ips if ip != pref]
     return ips
 
@@ -1198,7 +1206,7 @@ def speed_test_ips():
     filename = _pick_test_file()
     candidates = gather_candidate_ips("cdn.pypy.dance")
     pref = (_config.get("preferred_cdn_ip") or "").strip()
-    if pref:
+    if pref and _is_public_ip(pref):
         candidates = [pref] + [ip for ip in candidates if ip != pref]
     candidates = candidates[:16]
     if not candidates:
