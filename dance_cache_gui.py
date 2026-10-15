@@ -99,9 +99,11 @@ class DanceCacheApp:
         row4 = ttk.Frame(cfg)
         row4.pack(fill=tk.X, pady=(6, 0))
         self.ytperm_var = tk.BooleanVar(value=bool(dc._config.get("youtube_permanent", False)))
-        ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var,
+                        command=self._perm_toggled).pack(side=tk.LEFT)
         self.cdnperm_var = tk.BooleanVar(value=bool(dc._config.get("cdn_permanent", False)))
-        ttk.Checkbutton(row4, text="其他视频永久保存", variable=self.cdnperm_var).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(row4, text="其他视频永久保存", variable=self.cdnperm_var,
+                        command=self._perm_toggled).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(row4, text="(永久保存=按编号存到曲库目录；关掉则只进普通缓存)",
                   foreground="gray").pack(side=tk.LEFT, padx=6)
 
@@ -305,6 +307,15 @@ class DanceCacheApp:
             messagebox.showwarning("本地视频库", "尚未设置曲库目录，请先在设置里填写路径并保存")
             return
         os.startfile(dc._config["library_dir"])
+
+    def _perm_toggled(self):
+        """勾选永久保存但没填曲库目录时立即提醒"""
+        if (self.ytperm_var.get() or self.cdnperm_var.get()) and not self.libdir_var.get().strip():
+            messagebox.showinfo(
+                "需要曲库目录",
+                "永久保存会把视频按编号存进曲库目录。\n"
+                "请先在上方【曲库目录】栏选择一个大硬盘路径，再点【保存设置】，永久保存才会生效。",
+            )
 
     def browse_libdir(self):
         d = filedialog.askdirectory(title="选择曲库目录（大硬盘）")
