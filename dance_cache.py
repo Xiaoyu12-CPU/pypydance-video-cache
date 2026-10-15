@@ -61,8 +61,8 @@ DEFAULT_CONFIG = {
     "max_parallel": 2,
     "preferred_cdn_ip": "",
     "enable_youtube_cache": True,
-    "youtube_permanent": True,
-    "cdn_permanent": True,
+    "youtube_permanent": False,
+    "cdn_permanent": False,
 }
 
 _config = {}
@@ -276,7 +276,7 @@ def target_path(filename, song_id=None):
     if song_id is None:
         with _mapping_lock:
             song_id = _reverse_mapping.get(filename)
-    if song_id is not None and library_enabled() and _config.get("cdn_permanent", True):
+    if song_id is not None and library_enabled() and _config.get("cdn_permanent", False):
         return library_path(song_id)
     return cache_path(filename)
 
@@ -298,7 +298,7 @@ _yt_online_logged = set()  # 已提示过"本地无文件走在线"的 YouTube �
 
 
 def yt_local_path(song_id):
-    """YouTube 源歌曲的本地文件：曲库 {id}.mp4 / 永久目录 yt/{id}.mp4 / 缓存 yt_{id}.mp4"""
+    """YouTube 源歌曲的本地文件：曲库 {id}.mp4 / 旧版永久目录 yt/{id}.mp4 / 缓存 yt_{id}.mp4"""
     if in_library(song_id):
         return library_path(song_id)
     p = os.path.join(_config["cache_dir"], "yt", f"{song_id}.mp4")
@@ -311,13 +311,9 @@ def yt_local_path(song_id):
 
 
 def yt_target_path(song_id):
-    """录流保存位置：曲库 -> {id}.mp4；永久保存开关开启 -> 缓存/yt/{id}.mp4（不参与清理）"""
-    if library_enabled():
+    """录流保存位置：曲库模式且"YouTube永久保存"开启 -> 曲库 {id}.mp4；否则进普通缓存（会被清理）"""
+    if library_enabled() and _config.get("youtube_permanent", False):
         return library_path(song_id)
-    if _config.get("youtube_permanent", True):
-        d = os.path.join(_config["cache_dir"], "yt")
-        os.makedirs(d, exist_ok=True)
-        return os.path.join(d, f"{song_id}.mp4")
     return cache_path(f"yt_{song_id}.mp4")
 
 

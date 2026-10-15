@@ -98,9 +98,9 @@ class DanceCacheApp:
 
         row4 = ttk.Frame(cfg)
         row4.pack(fill=tk.X, pady=(6, 0))
-        self.ytperm_var = tk.BooleanVar(value=bool(dc._config.get("youtube_permanent", True)))
+        self.ytperm_var = tk.BooleanVar(value=bool(dc._config.get("youtube_permanent", False)))
         ttk.Checkbutton(row4, text="YouTube永久保存", variable=self.ytperm_var).pack(side=tk.LEFT)
-        self.cdnperm_var = tk.BooleanVar(value=bool(dc._config.get("cdn_permanent", True)))
+        self.cdnperm_var = tk.BooleanVar(value=bool(dc._config.get("cdn_permanent", False)))
         ttk.Checkbutton(row4, text="其他视频永久保存", variable=self.cdnperm_var).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(row4, text="(永久保存=按编号存到曲库目录；关掉则只进普通缓存)",
                   foreground="gray").pack(side=tk.LEFT, padx=6)
@@ -300,13 +300,11 @@ class DanceCacheApp:
             dc.clear_cache()
 
     def open_yt_dir(self):
-        """打开本地视频库：曲库模式开曲库目录，否则开 缓存/yt/（YouTube 永久保存区）"""
-        if dc.library_enabled():
-            d = dc._config["library_dir"]
-        else:
-            d = os.path.join(dc._config["cache_dir"], "yt")
-        os.makedirs(d, exist_ok=True)
-        os.startfile(d)
+        """打开本地视频库（曲库目录）"""
+        if not dc.library_enabled():
+            messagebox.showwarning("本地视频库", "尚未设置曲库目录，请先在设置里填写路径并保存")
+            return
+        os.startfile(dc._config["library_dir"])
 
     def browse_libdir(self):
         d = filedialog.askdirectory(title="选择曲库目录（大硬盘）")
@@ -336,6 +334,13 @@ class DanceCacheApp:
         dc._config["enable_youtube_cache"] = bool(self.ytcache_var.get())
         dc._config["youtube_permanent"] = bool(self.ytperm_var.get())
         dc._config["cdn_permanent"] = bool(self.cdnperm_var.get())
+        if not lib and (dc._config["youtube_permanent"] or dc._config["cdn_permanent"]):
+            messagebox.showwarning(
+                "永久保存未生效",
+                "你勾选了永久保存，但没有填写曲库目录。\n"
+                "永久保存是把视频按编号存进曲库目录的，没有曲库目录就不会生效，视频只会进入普通缓存（会被自动清理）。\n\n"
+                "如需永久保存，请先填写曲库目录再勾选。",
+            )
         dc.save_config()
         msg = "设置已保存" + (f"，曲库目录: {lib}" if lib else "")
         if ip:
