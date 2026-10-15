@@ -132,9 +132,6 @@ class DanceCacheApp:
         adv2.pack(fill=tk.X, pady=(6, 0))
         ttk.Button(adv2, text="替换歌曲…", command=self.open_replace_window).pack(side=tk.LEFT)
         self.sound_var = tk.BooleanVar(value=bool(dc._config.get("replace_sound_alert", True)))
-        ttk.Checkbutton(adv2, text="替换歌曲播放提示音", variable=self.sound_var).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(adv2, text="(提示音=exe旁的 ding.wav，删掉=静音，换成自己的wav=自定义)",
-                  foreground="gray").pack(side=tk.LEFT, padx=6)
 
         qf = ttk.LabelFrame(self.root, text="当前队列", padding=4)
         qf.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
@@ -410,6 +407,20 @@ class DanceCacheApp:
         ttk.Button(btns, text="打开替换目录", command=lambda: (
             os.makedirs(dc._config["replace_dir"], exist_ok=True),
             os.startfile(dc._config["replace_dir"]))).pack(side=tk.LEFT, padx=4)
+
+        def apply_sound():
+            dc._config["replace_sound_alert"] = bool(self.sound_var.get())
+            dc.save_config()
+            if dc._config["replace_sound_alert"]:
+                dc.ensure_ding()
+            dc.log(f"替换歌曲提示音: {'开' if dc._config['replace_sound_alert'] else '关'}")
+
+        snd = ttk.Frame(win)
+        snd.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Checkbutton(snd, text="替换歌曲播放提示音", variable=self.sound_var,
+                        command=apply_sound).pack(side=tk.LEFT)
+        ttk.Label(snd, text="(提示音=exe旁的 ding.wav，删掉=静音，换成自己的wav=自定义)",
+                  foreground="gray").pack(side=tk.LEFT, padx=6)
         refresh()
 
     def browse_libdir(self):
