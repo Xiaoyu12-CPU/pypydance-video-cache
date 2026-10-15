@@ -14,7 +14,9 @@ mapping.json
 error.log
 cache/
 cookie/
+replace/
+ding.wav
 
 # 打包产物与本地备份
 *.exe
-V1.0_备份/
+*_备份/

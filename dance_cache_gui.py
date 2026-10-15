@@ -5,11 +5,12 @@
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dance_cache as dc
@@ -127,6 +128,14 @@ class DanceCacheApp:
         self.verify_btn = ttk.Button(adv, text="校验曲库完整性", command=self.verify_library)
         self.verify_btn.pack(side=tk.LEFT)
 
+        adv2 = ttk.Frame(adv)
+        adv2.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(adv2, text="替换歌曲…", command=self.open_replace_window).pack(side=tk.LEFT)
+        self.sound_var = tk.BooleanVar(value=bool(dc._config.get("replace_sound_alert", True)))
+        ttk.Checkbutton(adv2, text="替换歌曲播放提示音", variable=self.sound_var).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(adv2, text="(提示音=exe旁的 ding.wav，删掉=静音，换成自己的wav=自定义)",
+                  foreground="gray").pack(side=tk.LEFT, padx=6)
+
         qf = ttk.LabelFrame(self.root, text="当前队列", padding=4)
         qf.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
         self.queue_tree = ttk.Treeview(qf, columns=("state", "name", "player"), show="headings", height=8)
@@ -140,6 +149,7 @@ class DanceCacheApp:
         self.queue_tree.tag_configure("cached", foreground="green")
         self.queue_tree.tag_configure("downloading", foreground="orange")
         self.queue_tree.tag_configure("external", foreground="gray")
+        self.queue_tree.tag_configure("replaced", foreground="purple")
 
         df = ttk.LabelFrame(self.root, text="下载中", padding=4)
         df.pack(fill=tk.X, padx=8, pady=4)
@@ -260,7 +270,8 @@ class DanceCacheApp:
         for row in self.queue_tree.get_children():
             self.queue_tree.delete(row)
         for it in items:
-            tag = {"已缓存": "cached", "下载中": "downloading", "外部源": "external", "YouTube源": "external"}.get(it["state"], "")
+            tag = {"已缓存": "cached", "下载中": "downloading", "外部源": "external",
+                   "YouTube源": "external", "已替换": "replaced"}.get(it["state"], "")
             self.queue_tree.insert("", tk.END, values=(it["state"], it["name"], it["player"]), tags=(tag,))
 
     def _update_progress(self, fn, done, total):
@@ -317,6 +328,90 @@ class DanceCacheApp:
                 "请先在上方【曲库目录】栏选择一个大硬盘路径，再点【保存设置】，永久保存才会生效。",
             )
 
+    def open_replace_window(self):
+        """替换歌曲管理窗口：replace 目录里按 编号.mp4 存放的视频优先于一切本地/在线来源"""
+        if getattr(self, "_replace_win", None) and self._replace_win.winfo_exists():
+            self._replace_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        self._replace_win = win
+        win.title("替换歌曲管理")
+        win.geometry("560x400")
+        win.transient(self.root)
+
+        ttk.Label(win, text="规则：replace 目录里放 编号.mp4，任何人点这首，你本地都放替换后的视频（只影响你自己）。\n"
+                            "建议 H.264 编码的 mp4，时长最好和原曲一致，短了结尾黑屏、长了被切歌掐掉。",
+                  foreground="gray", justify=tk.LEFT).pack(anchor=tk.W, padx=8, pady=(8, 4))
+
+        tree = ttk.Treeview(win, columns=("id", "size"), show="headings", height=12)
+        tree.heading("id", text="歌曲编号")
+        tree.heading("size", text="文件大小")
+        tree.column("id", width=120, anchor=tk.CENTER)
+        tree.column("size", width=200, anchor=tk.CENTER)
+        tree.pack(fill=tk.BOTH, expand=True, padx=8)
+
+        def refresh():
+            for row in tree.get_children():
+                tree.delete(row)
+            d = dc._config.get("replace_dir") or ""
+            if not os.path.isdir(d):
+                return
+            for name in sorted(os.listdir(d), key=lambda n: int(n[:-4]) if n[:-4].isdigit() else 0):
+                if re.match(r"^\d+\.mp4$", name):
+                    size_mb = os.path.getsize(os.path.join(d, name)) / 1048576
+                    tree.insert("", tk.END, values=(name[:-4], f"{size_mb:.1f} MB"))
+
+        def add():
+            sid = simpledialog.askstring("添加替换", "要替换的歌曲编号（点歌队列里的数字 id）:", parent=win)
+            if not sid:
+                return
+            sid = sid.strip()
+            if not sid.isdigit():
+                messagebox.showerror("添加替换", "编号必须是数字", parent=win)
+                return
+            src = filedialog.askopenfilename(
+                title="选择你的视频文件", parent=win,
+                filetypes=[("视频文件", "*.mp4"), ("所有文件", "*.*")])
+            if not src:
+                return
+            d = dc._config["replace_dir"]
+            os.makedirs(d, exist_ok=True)
+            dst = os.path.join(d, f"{sid}.mp4")
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                messagebox.showerror("添加替换", f"复制失败: {e}", parent=win)
+                return
+            dc.log(f"替换歌曲已添加: id={sid} <- {os.path.basename(src)}")
+            dc.refresh_queue_state()
+            refresh()
+
+        def delete():
+            sel = tree.selection()
+            if not sel:
+                return
+            sid = tree.item(sel[0])["values"][0]
+            if not messagebox.askyesno("删除替换", f"删除歌曲 {sid} 的替换？（replace 目录里的文件会被删除）", parent=win):
+                return
+            try:
+                os.remove(os.path.join(dc._config["replace_dir"], f"{sid}.mp4"))
+            except OSError as e:
+                messagebox.showerror("删除替换", f"删除失败: {e}", parent=win)
+                return
+            dc.log(f"替换歌曲已删除: id={sid}")
+            dc.refresh_queue_state()
+            refresh()
+
+        btns = ttk.Frame(win)
+        btns.pack(fill=tk.X, padx=8, pady=8)
+        ttk.Button(btns, text="添加替换…", command=add).pack(side=tk.LEFT)
+        ttk.Button(btns, text="删除选中", command=delete).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="刷新", command=refresh).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="打开替换目录", command=lambda: (
+            os.makedirs(dc._config["replace_dir"], exist_ok=True),
+            os.startfile(dc._config["replace_dir"]))).pack(side=tk.LEFT, padx=4)
+        refresh()
+
     def browse_libdir(self):
         d = filedialog.askdirectory(title="选择曲库目录（大硬盘）")
         if d:
@@ -345,6 +440,9 @@ class DanceCacheApp:
         dc._config["enable_youtube_cache"] = bool(self.ytcache_var.get())
         dc._config["youtube_permanent"] = bool(self.ytperm_var.get())
         dc._config["cdn_permanent"] = bool(self.cdnperm_var.get())
+        dc._config["replace_sound_alert"] = bool(self.sound_var.get())
+        if dc._config["replace_sound_alert"]:
+            dc.ensure_ding()
         if not lib and (dc._config["youtube_permanent"] or dc._config["cdn_permanent"]):
             messagebox.showwarning(
                 "永久保存未生效",
