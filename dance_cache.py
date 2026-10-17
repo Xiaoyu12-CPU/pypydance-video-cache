@@ -48,7 +48,6 @@ API_HOST = "api.pypy.dance"
 HIJACK_HOSTS = CDN_HOSTS + [API_HOST]  # api 仅在 YouTube 缓存模式启用时劫持
 VRC_LOG_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "LocalLow", "VRChat", "VRChat")
 MAPPING_PATH = os.path.join(SCRIPT_DIR, "mapping.json")
-DING_PATH = os.path.join(SCRIPT_DIR, "ding.wav")
 
 QUEUE_RE = re.compile(r"^\[PyPyDanceQueue] (\[.*])")
 FILENAME_RE = re.compile(r"^[\w.\-]+\.mp4$")
@@ -64,9 +63,6 @@ DEFAULT_CONFIG = {
     "enable_youtube_cache": True,
     "youtube_permanent": False,
     "cdn_permanent": False,
-    "replace_dir": "replace",
-    "replace_sound_alert": True,
-    "ding_generated": False,
 }
 
 _config = {}
@@ -157,8 +153,6 @@ def load_config():
     if not os.path.isabs(_config["cache_dir"]):
         _config["cache_dir"] = os.path.join(SCRIPT_DIR, _config["cache_dir"])
     os.makedirs(_config["cache_dir"], exist_ok=True)
-    if not os.path.isabs(_config["replace_dir"]):
-        _config["replace_dir"] = os.path.join(SCRIPT_DIR, _config["replace_dir"])
     lib = _config.get("library_dir") or ""
     if lib:
         try:
@@ -254,35 +248,16 @@ def in_library(song_id):
     return os.path.exists(p) and os.path.getsize(p) > 0
 
 
-# ---------------- 替换歌曲（replace 目录，按歌曲编号命名，优先级最高） ----------------
-
-def replace_path_for_song(song_id):
-    """该歌曲是否有本地替换文件（replace/{编号}.mp4）"""
-    d = _config.get("replace_dir")
-    if not d:
-        return None
-    p = os.path.join(d, f"{song_id}.mp4")
-    if os.path.exists(p) and os.path.getsize(p) > 0:
-        return p
-    return None
-
-
 def local_path_for(filename):
-    """按文件名找本地文件：替换目录 > 缓存目录 > 曲库；yt_{id}.mp4 是 YouTube 源歌曲的虚拟文件名"""
+    """按文件名找本地文件：先缓存目录，再按映射查曲库；yt_{id}.mp4 是 YouTube 源歌曲的虚拟文件名"""
     m = YT_FILENAME_RE.match(filename)
-    sid = int(m.group(1)) if m else None
-    if sid is None:
-        with _mapping_lock:
-            sid = _reverse_mapping.get(filename)
-    if sid is not None:
-        rp = replace_path_for_song(sid)
-        if rp:
-            return rp
     if m:
-        return yt_local_path(sid)
+        return yt_local_path(int(m.group(1)))
     p = cache_path(filename)
     if os.path.exists(p) and os.path.getsize(p) > 0:
         return p
+    with _mapping_lock:
+        sid = _reverse_mapping.get(filename)
     if sid is not None and library_enabled():
         p = library_path(sid)
         if os.path.exists(p) and os.path.getsize(p) > 0:
@@ -1418,7 +1393,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         if kind == "cdn":
             return self._redirect(f"http://cdn.pypy.dance/{payload}")
         if kind == "yt":
-            if yt_local_path(sid) or replace_path_for_song(sid):
+            if yt_local_path(sid):
                 log(f"API 重定向 id={sid} -> 本地 YouTube 缓存 yt_{sid}.mp4")
                 return self._redirect(f"http://cdn.pypy.dance/yt_{sid}.mp4")
             # 未入库：本次走 YouTube 在线播放；VRChat 解析出直链后会被日志监听器捕获录制
@@ -1686,9 +1661,7 @@ def describe_queue(items):
         sn = it.get("songNum", 0)
         entry = {"name": it.get("videoName", "?"), "player": it.get("playerName", "")}
         if isinstance(sn, int) and sn > 0:
-            if replace_path_for_song(sn):
-                entry["state"] = "已替换"
-            elif in_library(sn) or yt_local_path(sn):
+            if in_library(sn) or yt_local_path(sn):
                 entry["state"] = "已缓存"
             else:
                 kind, payload = song_route(sn)
@@ -1718,7 +1691,7 @@ def submit_preload(items):
     count = int(_config["preload_count"]) + 1
     for it in items[:count]:
         sn = it.get("songNum", 0)
-        if not (isinstance(sn, int) and sn > 0) or in_library(sn) or yt_local_path(sn) or replace_path_for_song(sn):
+        if not (isinstance(sn, int) and sn > 0) or in_library(sn) or yt_local_path(sn):
             continue
         kind, payload = song_route(sn)
         if kind is None:
@@ -1726,62 +1699,6 @@ def submit_preload(items):
             kind, payload = song_route(sn)
         if kind == "cdn" and not is_cached(payload):
             start_background_download(payload, sn)
-
-
-# ---------------- 替换歌曲提示音 ----------------
-
-_last_alert_song = None
-
-
-def ensure_ding():
-    """默认提示音 ding.wav 不存在且从未生成过时，现场合成一个"叮叮"双音。
-    用户删除后不再重新生成；换成自己的 wav（同名）即可自定义。"""
-    if not DING_PATH or os.path.exists(DING_PATH) or _config.get("ding_generated"):
-        return
-    import math
-    import struct
-    import wave
-    rate = 44100
-
-    def tone(freq, dur, vol=0.45):
-        n = int(rate * dur)
-        frames = bytearray()
-        for i in range(n):
-            t = i / rate
-            env = min(1.0, t * 30) * math.exp(-5.0 * t / dur)
-            frames += struct.pack("<h", int(32767 * vol * env * math.sin(2 * math.pi * freq * t)))
-        return frames
-
-    try:
-        with wave.open(DING_PATH, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(rate)
-            w.writeframes(bytes(tone(1318.5, 0.3) + tone(1760.0, 0.45)))
-        _config["ding_generated"] = True
-        save_config()
-        log("已生成默认提示音 ding.wav（删掉=静音，替换成自己的 wav=自定义提示音）")
-    except Exception as e:
-        log(f"生成提示音失败: {e}")
-
-
-def play_replace_alert(song_id):
-    """当前播放歌曲被替换时叮一声（同一首歌只提醒一次）"""
-    global _last_alert_song
-    if not _config.get("replace_sound_alert", True):
-        return
-    if song_id == _last_alert_song:
-        return
-    _last_alert_song = song_id
-    if not DING_PATH or not os.path.exists(DING_PATH):
-        log("提示音文件 ding.wav 不存在，跳过（在 exe 旁放一个 ding.wav 即可恢复）")
-        return
-    try:
-        import winsound
-        winsound.PlaySound(DING_PATH, winsound.SND_FILENAME | winsound.SND_ASYNC)
-        log(f"当前播放的是替换歌曲 id={song_id}，已播放提示音")
-    except Exception as e:
-        log(f"播放提示音失败: {e}")
 
 
 class LogWatcher(threading.Thread):
@@ -1843,19 +1760,13 @@ class LogWatcher(threading.Thread):
             self._on_queue(items)
 
     def _on_queue(self, items):
-        global _last_queue_items, _last_alert_song
+        global _last_queue_items
         _last_queue_items = items or []
         if not items:
-            _last_alert_song = None
             emit("queue", items=[])
             return
         emit("queue", items=describe_queue(items))
         submit_preload(items)
-        first = items[0].get("songNum", 0)
-        if isinstance(first, int) and first > 0 and replace_path_for_song(first):
-            play_replace_alert(first)
-        else:
-            _last_alert_song = None
 
 
 # ---------------- 服务启停 ----------------
@@ -1913,8 +1824,6 @@ def start_services():
         log("YouTube 源缓存已启用（api.pypy.dance 已劫持，443 隧道透传 https 请求）")
     threading.Thread(target=_mapping_flush_loop, daemon=True).start()
     log("本地缓存服务已启动: 127.0.0.1:80")
-    if _config.get("replace_sound_alert", True):
-        ensure_ding()
     pref = (_config.get("preferred_cdn_ip") or "").strip()
     if pref:
         log(f"优选 CDN IP: {pref}（失效时自动回落默认节点）")
