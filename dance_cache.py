@@ -531,8 +531,8 @@ def _hosts_error_reason(e):
         return "没有管理员权限，请以管理员身份运行"
     if getattr(e, "winerror", None) == 32:
         return "hosts 文件正被其他程序占用，请关闭加速器/安全软件后重试"
-    return ("hosts 文件被锁定或设为只读（常见于雷神等加速器的防护），"
-            "请关闭加速器的 hosts 防护，或先启动本软件再开加速器")
+    return ("hosts 文件被锁定或设为只读（可能是安全软件/加速器的防护功能），"
+            "请关闭相关防护后重试，或先启动本软件再开加速器")
 
 
 def clean_stale_hosts():
@@ -1983,7 +1983,7 @@ def _cli_listener(kind, data):
 
 def main():
     add_listener(_cli_listener)
-    log("=== VRChat PyPyDance助手 V1.1（命令行模式） ===")
+    log("=== VRChat PyPyDance助手 V1.11（命令行模式） ===")
     log("Bilibili @鲨鲨比亚Sharkspeare")
     if os.name != "nt":
         log("本工具仅支持 Windows")

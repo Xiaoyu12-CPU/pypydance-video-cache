@@ -19,7 +19,7 @@ import dance_cache as dc
 class DanceCacheApp:
     def __init__(self, root):
         self.root = root
-        root.title("VRChat PyPyDance助手 V1.1")
+        root.title("VRChat PyPyDance助手 V1.11")
         root.geometry("880x900")
         root.minsize(700, 640)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -29,7 +29,7 @@ class DanceCacheApp:
         dc.add_listener(lambda kind, data: self.events.put((kind, data)))
 
         # 底栏最先 pack，保证窗口再小也不会被挤掉
-        footer = ttk.Label(root, text="V1.1  ·  Bilibili @鲨鲨比亚Sharkspeare",
+        footer = ttk.Label(root, text="V1.11  ·  Bilibili @鲨鲨比亚Sharkspeare",
                            foreground="gray", font=("", 8))
         footer.pack(side=tk.BOTTOM, pady=2)
 
