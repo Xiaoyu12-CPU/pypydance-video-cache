@@ -20,6 +20,7 @@ from tools import package_windows as packager
 from tools import publish_windows_preview as publisher
 from dance_ui import release_resources as resources
 from dance_ui.exe_icon import describe_embedded_icon, ico_frames
+from dance_ui.windows_taskbar import APPLICATION_ID
 
 
 def synthetic_icon_executable(ico: bytes, second_group: bool = False) -> bytes:
@@ -157,6 +158,13 @@ class ReleaseAssetTests(unittest.TestCase):
         self.icon_info = resources.describe_app_icons()
         self.exe_bytes = synthetic_icon_executable(self.icon_ico)
         self.embedded_icon = describe_embedded_icon(self.exe_bytes, self.icon_ico)
+        self.taskbar_info = {
+            "application_id": APPLICATION_ID,
+            "native_icons": [
+                {"kind": "BIG", "size": [32, 32], "pixel_verified": True},
+                {"kind": "SMALL", "size": [16, 16], "pixel_verified": True},
+            ],
+        }
         self.info = {
             "git_sha": self.SHA,
             "application_version": publisher.TAG.removeprefix("v"),
@@ -164,6 +172,7 @@ class ReleaseAssetTests(unittest.TestCase):
             "bundled_cooldown_video": dict(self.cooldown_info),
             "bundled_application_icons": copy.deepcopy(self.icon_info),
             "windows_executable_icon": dict(self.embedded_icon),
+            "windows_taskbar": copy.deepcopy(self.taskbar_info),
             "isolated_tests": {
                 "status": "passed", "platform": "win32", "tests_run": 3, "passed": 3,
                 "failures": [], "errors": [], "skipped": [],
@@ -177,6 +186,7 @@ class ReleaseAssetTests(unittest.TestCase):
                 "bundled_cooldown_video": dict(self.cooldown_info),
                 "bundled_application_icons": copy.deepcopy(self.icon_info),
                 "windows_executable_icon": dict(self.embedded_icon),
+                "windows_taskbar": copy.deepcopy(self.taskbar_info),
             },
         }
 
@@ -207,7 +217,7 @@ class ReleaseAssetTests(unittest.TestCase):
     def publication_environment(self, **overrides):
         event = self.assets / "github-event.json"
         event.write_text(json.dumps({
-            "after": self.SHA, "head_commit": {"message": "Release 3.0.0 [publish-release]"},
+            "after": self.SHA, "head_commit": {"message": "Release 3.0.1 [publish-release]"},
         }), encoding="utf-8")
         environment = {
             "GITHUB_REPOSITORY": publisher.REPOSITORY, "GITHUB_SHA": self.SHA,
@@ -299,6 +309,50 @@ class ReleaseAssetTests(unittest.TestCase):
                     self.write_assets(info)
                     with self.assertRaises(ValueError):
                         publisher.verify_assets(self.assets, self.SHA)
+
+    def test_taskbar_report_requires_native_big_and_small_pixels_and_application_identity(self):
+        invalid = (
+            None,
+            {},
+            dict(self.taskbar_info, application_id="Python"),
+            dict(self.taskbar_info, native_icons=[]),
+            dict(self.taskbar_info, native_icons=self.taskbar_info["native_icons"][:1]),
+            dict(self.taskbar_info, native_icons=[
+                {"kind": "BIG", "pixel_verified": True},
+                {"kind": "BIG", "pixel_verified": True},
+            ]),
+            dict(self.taskbar_info, native_icons=[
+                {"kind": "BIG", "pixel_verified": True},
+                {"kind": "SMALL", "pixel_verified": False},
+            ]),
+            dict(self.taskbar_info, native_icons=[
+                {"kind": "BIG", "pixel_verified": "true"},
+                {"kind": "SMALL", "pixel_verified": True},
+            ]),
+            dict(self.taskbar_info, native_icons=[None, {"kind": "SMALL", "pixel_verified": True}]),
+        )
+        for verifier in (packager.verify_taskbar_report, publisher.verify_taskbar_report):
+            verifier(self.taskbar_info)
+            for report in invalid:
+                with self.subTest(verifier=verifier.__module__, report=report), \
+                        self.assertRaisesRegex(ValueError, "taskbar"):
+                    verifier(report)
+
+    def test_rejects_missing_or_inconsistent_native_taskbar_evidence(self):
+        for section in (None, "frozen_demo_smoke"):
+            for report in (None, dict(self.taskbar_info, application_id="Python")):
+                with self.subTest(section=section, report=report):
+                    info = copy.deepcopy(self.info)
+                    target = info if section is None else info[section]
+                    target["windows_taskbar"] = report
+                    self.write_assets(info)
+                    with self.assertRaisesRegex(ValueError, "taskbar"):
+                        publisher.verify_assets(self.assets, self.SHA)
+        info = copy.deepcopy(self.info)
+        info["frozen_demo_smoke"]["windows_taskbar"]["native_icons"][0]["pixel_verified"] = False
+        self.write_assets(info)
+        with self.assertRaisesRegex(ValueError, "taskbar"):
+            publisher.verify_assets(self.assets, self.SHA)
 
     def test_rejects_missing_or_changed_video_despite_a_matching_archive_checksum(self):
         path = "_internal/" + resources.COOLDOWN_RELATIVE_PATH
@@ -542,6 +596,7 @@ class ReleaseAssetTests(unittest.TestCase):
             self.assertEqual(info["bundled_cooldown_video"], self.cooldown_info)
             self.assertEqual(info["bundled_application_icons"], self.icon_info)
             self.assertEqual(info["windows_executable_icon"], self.embedded_icon)
+            self.assertEqual(info["windows_taskbar"], self.taskbar_info)
             self.assertTrue(info["not_verified"])
             preset = bundle / "_internal/dance_ui/presets/xiaoyu12/background.png"
             preset.parent.mkdir(parents=True)

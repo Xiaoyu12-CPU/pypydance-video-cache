@@ -1,6 +1,6 @@
 # Windows 正式版使用与验证
 
-当前正式版为 `3.0.0`。用户已反馈在 Windows + VRChat 实际使用正常；以下步骤供首次使用、升级及环境差异检查。无需安装 Python。
+当前正式版为 `3.0.1`。用户已反馈在 Windows + VRChat 实际使用正常；以下步骤供首次使用、升级及环境差异检查。无需安装 Python。
 
 1. 下载 `PyPyDanceCache-windows-x64.zip`，将整个 `PyPyDanceCache` 文件夹解压到当前账户可写的独立目录。
 2. 保留 `PyPyDanceCache.exe` 旁的 `_internal` 等全部文件，不能只复制 exe。升级前备份旧 `config.json`、`mapping.json` 和视频目录，在独立目录解压新包；确认旧相对路径后再迁入配置，不覆盖或合并 `_internal`。
@@ -34,3 +34,5 @@ SteamVR 关闭不会退出助手。演示模式只预览开关交互，不执行
 ## PY 程序图标
 
 3.0.0 使用黑白 PY 对话框图标，覆盖窗口、应用及 Windows exe 图标。完整解压新版包后运行其中的 exe；原有配置、视频及默认 CoolDown 视频的行为保持不变。
+
+3.0.1 补齐 Windows 任务栏应用身份。如果任务栏仍显示旧 Python 固定项，先退出旧程序、取消固定旧项，再打开新版完整目录中的 exe 并重新固定。程序不自动修改个人任务栏固定项。

@@ -18,6 +18,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dance_ui import __version__
 from dance_ui.exe_icon import describe_embedded_icon
+from dance_ui.windows_taskbar import APPLICATION_ID
 from dance_ui.release_resources import (
     APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
     COOLDOWN_ARCHIVE_PATH, COOLDOWN_RELATIVE_PATH,
@@ -30,6 +31,18 @@ def read_json(path: Path) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return value
+
+
+def verify_taskbar_report(report: object) -> None:
+    """Require real native icon evidence, rather than only the Qt icon property."""
+    if not isinstance(report, dict) or report.get("application_id") != APPLICATION_ID:
+        raise ValueError("The native Windows taskbar application identity was not verified.")
+    icons = report.get("native_icons")
+    if (not isinstance(icons, list) or len(icons) < 2
+            or not {"BIG", "SMALL"}.issubset(
+                item.get("kind") for item in icons if isinstance(item, dict)
+            ) or any(not isinstance(item, dict) or item.get("pixel_verified") is not True for item in icons)):
+        raise ValueError("The native Windows taskbar BIG and SMALL icons were not pixel verified.")
 
 
 def main() -> int:
@@ -78,6 +91,7 @@ def main() -> int:
 
     tests = read_json(args.reports / "unit-tests.json")
     smoke = read_json(args.reports / "frozen-smoke.json")
+    verify_taskbar_report(smoke.get("windows_taskbar"))
     if (tests.get("status") != "passed" or tests.get("platform") != "win32"
             or tests.get("tests_run", 0) < 1 or tests.get("passed") != tests.get("tests_run")):
         raise SystemExit("The full isolated test suite has not passed.")
@@ -98,6 +112,7 @@ def main() -> int:
             "openvr_library_loaded_without_initialization",
             "bundled_cooldown_video",
             "application_icon_resources", "application_window_icon", "windows_executable_icon",
+            "windows_taskbar_identity_and_icon",
         }.issubset(smoke.get("checks", []))
     ):
         raise SystemExit("A passing frozen-demo smoke report using native Windows Qt is required.")
@@ -126,6 +141,7 @@ def main() -> int:
         "bundled_cooldown_video": video_info,
         "bundled_application_icons": icons_info,
         "windows_executable_icon": embedded_icon,
+        "windows_taskbar": smoke["windows_taskbar"],
         "user_reported_validation": {
             "source": "Direct user feedback before the stable release",
             "environment": "Windows running VRChat",
@@ -138,6 +154,7 @@ def main() -> int:
             ],
         },
         "not_verified": [
+            "User-machine Explorer taskbar appearance, existing pinned items, and icon caches",
             "The newly bundled cooldown video's playback in real Windows VRChat",
             "SteamVR automatic startup and the associated UAC interaction",
             "hosts restoration after service shutdown",

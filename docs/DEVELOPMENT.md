@@ -165,7 +165,7 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 
 该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、默认浅蓝主题及使用临时合成图片的 Pillow 到 Qt 背景渲染，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
 
-普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v3.0.0`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
+普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v3.0.1`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
 
 冻结演示检查会加载打包的 Windows x64 OpenVR DLL，但不初始化或注册 SteamVR；只收集本机平台的 64 位 DLL 与许可。冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
 
@@ -186,3 +186,9 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 ## 作者与许可
 
 保留原作者署名、上游来源和项目 [MIT 许可](../LICENSE)。Qt for Python、Pillow 和打包工具采用各自的许可；构建脚本把已安装发行包中可发现的许可/声明文件放进 `THIRD_PARTY_LICENSES`，发布时保留与实际依赖版本一致的材料。
+
+### Windows 任务栏身份（3.0.1）
+
+入口在创建 QApplication 或任何窗口之前设置稳定的 AppUserModelID `Xiaoyu12CPU.PyPyDanceCache`，避免系统沿用 Python 宿主的任务栏关联；不改变 Qt 配置组织和应用名称，不自动修改用户固定项。
+
+冻结检查读回进程身份，并通过 WM_GETICON 获取原生 BIG/SMALL HICON，分别在黑白底绘制，与同尺寸的 PY 图标逐像素比较。此检查不同于 Qt windowIcon 属性或 exe 内嵌资源校验，不表示已读取或刷新用户的 Explorer 缓存。已有旧固定项可由用户取消固定后重新固定新版 exe。

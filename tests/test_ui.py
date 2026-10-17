@@ -56,6 +56,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.patches = ExitStack()
+        self.patches.enter_context(patch("dance_ui.app.set_windows_application_identity"))
         self.addCleanup(self.patches.close)
         self.windows = []
         self.release_events = []
@@ -345,6 +346,30 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertEqual(app_module.main(["--steamvr-startup"]), 0)
         self.assertEqual(order, ["admin", "claim"])
         application.assert_not_called()
+
+    def test_taskbar_identity_is_set_before_qapplication_even_in_demo(self):
+        from dance_ui import app as app_module
+
+        order = []
+        with patch.object(app_module, "set_windows_application_identity", side_effect=lambda: order.append("identity")), \
+                patch.object(app_module, "QApplication") as application, \
+                patch.object(app_module, "ThemeStore", side_effect=ValueError("测试退出")), \
+                patch.object(app_module.QMessageBox, "critical"):
+            application.instance.side_effect = lambda: (order.append("application"), self.app)[1]
+            self.assertEqual(app_module.main(["--demo", "--state-dir", str(self.root)]), 1)
+        self.assertEqual(order, ["identity", "application"])
+
+    def test_taskbar_identity_failure_reports_error_before_starting_services(self):
+        from dance_ui import app as app_module
+
+        with patch.object(app_module, "set_windows_application_identity", side_effect=OSError("任务栏身份设置失败")), \
+                patch.object(app_module.QMessageBox, "critical") as critical, \
+                patch.object(app_module, "CoreController") as controller:
+            self.assertEqual(app_module.main(["--demo"]), 1)
+        controller.assert_not_called()
+        self.core_mocks["ensure_admin"].assert_not_called()
+        critical.assert_called_once()
+        self.assertIn("任务栏身份设置失败", critical.call_args.args[2])
 
     def test_main_sets_the_approved_icon_on_the_application_and_window(self):
         from dance_ui import app as app_module

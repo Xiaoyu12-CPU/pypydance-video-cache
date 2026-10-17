@@ -6,7 +6,7 @@
 
 本 Fork 基于 [oreochromis/pypydance-video-cache](https://github.com/oreochromis/pypydance-video-cache) 继续开发，原作者为 **Bilibili @鲨鲨比亚Sharkspeare**。保留原有 Python 缓存核心与命令行入口，使用 Qt for Python 重构桌面界面，并增加日常使用功能。
 
-**[下载 v3.0.0 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v3.0.0)** · **[直接下载 Windows x64 ZIP](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/download/v3.0.0/PyPyDanceCache-windows-x64.zip)**
+**[下载 v3.0.1 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v3.0.1)** · **[直接下载 Windows x64 ZIP](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/download/v3.0.1/PyPyDanceCache-windows-x64.zip)**
 
 ## 下载与使用
 
@@ -18,11 +18,13 @@
 
 **必须保留 exe 旁的 `_internal` 等全部文件，不能只复制 exe。**默认放松视频、程序图标及运行依赖都在完整目录中。程序未签名，管理员授权窗口可能显示未知发布者。
 
+如果升级后仍看到之前固定的 Python 图标，请退出旧版本并打开新版 exe；已固定的旧项可先取消固定，再从新版程序重新固定。
+
 只想先看界面，可以双击 `打开演示.bat`。演示使用示例数据，不启动真实缓存服务、不修改 hosts，也不接入 VRChat。
 
 ## 相比 Fork 前更新了什么？
 
-对比基线为原项目的 [V1.2 源码提交 `5efd712`](https://github.com/oreochromis/pypydance-video-cache/tree/5efd712073d696e180ffeedfbfe51afd293f702e)，当前版本为本 Fork 的 `v3.0.0`。
+对比基线为原项目的 [V1.2 源码提交 `5efd712`](https://github.com/oreochromis/pypydance-video-cache/tree/5efd712073d696e180ffeedfbfe51afd293f702e)，当前版本为本 Fork 的 `v3.0.1`。
 
 原版已经具备本地缓存、队列预加载、永久曲库、YouTube 源缓存、CDN 测速、曲库维护和 Cool Down。本 Fork 在这些能力上继续改进，主要变化如下：
 
@@ -35,7 +37,7 @@
 | Cool Down | 已有功能，需要自行选择放松视频 | 随包提供默认视频，保留自选能力，并提供切回内置视频的入口 |
 | 运行信息 | 已有歌曲队列、下载进度、速度和日志 | 分开呈现歌曲、下载及服务状态，补充失败、取消和恢复提示，支持复制、导出日志 |
 | 设置保存 | 在原窗口中编辑并保存 | 草稿与应用分离，加强参数校验、保存失败提示及目录保护，避免测速操作顺带提交其他设置 |
-| 程序图标 | 原有图标 | 新 PY 对话框图标，覆盖应用、窗口及 Windows exe，提供七种图标尺寸 |
+| 程序图标 | 原有图标 | 新 PY 对话框图标，覆盖应用、窗口及 Windows exe，提供七种图标尺寸，并设置独立的 Windows 任务栏应用身份 |
 | 构建与分发 | 原有单文件 exe 打包方式 | 完整目录 ZIP，附 SHA-256 与构建报告，发布前执行自动测试和实际打包程序检查 |
 
 新版 GUI 使用 Qt、Pillow 和 OpenVR 等依赖，分发方式改为完整目录包；原有命令行缓存入口继续保留。
@@ -147,7 +149,7 @@ py -3.12 -m venv .venv
 
 ## 验证与问题反馈
 
-[v3.0.0 的 Windows 构建](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/actions/runs/39044770399)完成 **148 项自动化测试，失败 0、错误 0、跳过 0**，并实际启动打包后的演示程序，检查界面、资源、默认视频及 exe 内嵌图标。下载附件与包内 `docs/build-info.json` 记录对应提交和验证结果。
+Windows 发布构建会执行完整自动化测试，并实际启动打包后的演示程序，检查界面、默认视频、exe 内嵌图标，以及 Windows 应用身份和原生窗口图标。实际测试数量及结果见下载附件和包内 `docs/build-info.json`，它们记录对应提交和验证结果。
 
 用户已反馈此前版本在 Windows + VRChat 中正常工作。自动化检查与用户反馈分别记录，不代表所有网络、视频源、旧曲库迁移和 SteamVR 联动场景都已逐项验收。
 

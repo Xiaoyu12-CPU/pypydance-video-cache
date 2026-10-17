@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dance_ui.exe_icon import describe_embedded_icon
+from dance_ui.windows_taskbar import APPLICATION_ID
 from dance_ui.release_resources import (
     APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
     COOLDOWN_ARCHIVE_PATH,
@@ -23,8 +24,8 @@ from dance_ui.release_resources import (
 
 
 REPOSITORY = "Xiaoyu12-CPU/pypydance-video-cache"
-TAG = "v3.0.0"
-TITLE = "PyPyDance Cache 3.0.0（Windows 正式版）"
+TAG = "v3.0.1"
+TITLE = "PyPyDance Cache 3.0.1（Windows 正式版）"
 PUBLISH_MARKER = "[publish-release]"
 REQUIRED_SMOKE_CHECKS = {
     "demo_mode", "builtin_light_theme", "pillow_generated_background",
@@ -32,6 +33,7 @@ REQUIRED_SMOKE_CHECKS = {
     "openvr_library_loaded_without_initialization",
     "bundled_cooldown_video",
     "application_icon_resources", "application_window_icon", "windows_executable_icon",
+    "windows_taskbar_identity_and_icon",
 }
 
 
@@ -48,6 +50,18 @@ def api(path: str) -> dict | list:
 def digest(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def verify_taskbar_report(report: object) -> None:
+    """Require both native HICON checks and the explicit process identity."""
+    if not isinstance(report, dict) or report.get("application_id") != APPLICATION_ID:
+        raise ValueError("The native Windows taskbar application identity was not verified.")
+    icons = report.get("native_icons")
+    if (not isinstance(icons, list) or len(icons) < 2
+            or not {"BIG", "SMALL"}.issubset(
+                item.get("kind") for item in icons if isinstance(item, dict)
+            ) or any(not isinstance(item, dict) or item.get("pixel_verified") is not True for item in icons)):
+        raise ValueError("The native Windows taskbar BIG and SMALL icons were not pixel verified.")
 
 
 def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
@@ -68,6 +82,9 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
     if info.get("bundled_application_icons") != source_icons:
         raise ValueError("The release application icons differ from the approved source icons.")
     tests, smoke = info["isolated_tests"], info["frozen_demo_smoke"]
+    verify_taskbar_report(info.get("windows_taskbar"))
+    if smoke.get("windows_taskbar") != info["windows_taskbar"]:
+        raise ValueError("The build and frozen smoke Windows taskbar reports differ.")
     if (tests["status"] != "passed" or tests["platform"] != "win32"
             or tests["tests_run"] < 1 or tests["passed"] != tests["tests_run"]
             or any(tests[key] for key in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"))):
@@ -137,14 +154,16 @@ def tag_commit() -> str | None:
 def notes(info: dict, checksum: str) -> str:
     smoke, tests = info["frozen_demo_smoke"], info["isolated_tests"]
     run_url = f"https://github.com/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    return f"""PyPyDance Cache 3.0.0 Windows x64 正式版。
+    return f"""PyPyDance Cache 3.0.1 Windows x64 正式版。
 
 ## 本次更新
 
-- 使用用户确认的黑白对话框 PY 图标，替换 Windows exe、程序窗口及任务栏图标。
-- Windows exe 嵌入 16 / 24 / 32 / 48 / 64 / 128 / 256 像素图标，适配不同显示尺寸；透明 PNG 原图同时随包保留。
-- 本次按用户指定发布为 v3.0.0。原有功能和默认 CoolDown 视频保持现有行为，视频未重新编码或降低音频码率。
+- 修复程序可能被归入 Python 的任务栏标识；沿用已经确认的黑白对话框 PY 图标。
+- 为程序设置固定的 Windows 应用身份，并同步原生窗口的大、小图标，避免任务栏将程序归入 Python。
+- 保留七种尺寸的 exe 图标和透明 PNG；原有功能及默认 CoolDown 视频保持现有行为。
 - Windows 包继续不附带“小余12主题”及其背景。
+
+如果此前已把 Python 图标固定到任务栏，请先取消固定旧项，再从本版 `PyPyDanceCache.exe` 重新固定。程序不会自动修改你的固定项或清理系统图标缓存。
 
 ## 下载与启动
 
@@ -159,10 +178,11 @@ def notes(info: dict, checksum: str) -> str:
 - 实际打包 exe 以 Windows Qt 平台启动演示并自动退出；内置浅蓝主题、四页导航渲染、SVG 图标、Pillow 背景渲染和 OpenVR DLL 加载检查均通过。
 - exe 演示实际读取随包 MP4，核对 ISO MP4 文件标记、文件大小和 SHA-256；打包及发布校验确认源码资源、ZIP 内视频与构建报告一致。此检查不代表已在 VRChat 中播放。
 - exe 演示、打包及发布校验读取实际 PE 的 RT_GROUP_ICON / RT_ICON，确认七个尺寸的嵌入图像与批准 ICO 逐帧一致；同时核验 PNG / ICO 源文件、包内资源和 SHA-256。
+- 原生 Windows 演示读取真实进程应用身份和窗口大、小 HICON，并在黑白背景上逐像素对比批准的 PY 图案，确认任务栏使用的身份及图标均正确。
 - Qt / PySide6 {smoke['qt_version']}，Pillow {smoke['pillow_version']}。完整环境、视频及图标校验值见附件及包内 `docs/build-info.json`。
 - [本次 Windows 构建与测试记录]({run_url})。
 
-**待用户实机确认：**Windows 资源管理器、任务栏及不同显示缩放下的图标外观。用户此前已反馈旧版本在 Windows + VRChat 中正常工作；默认视频实际播放、SteamVR 自动启动与 UAC、hosts 恢复及其他专项的验证范围继续见构建报告。
+**待用户实机确认：**你本机任务栏（包含旧固定项、系统图标缓存）及不同显示缩放下的图标外观。自动化检查不读取或更改 Explorer 缓存及固定项。用户此前已反馈旧版本在 Windows + VRChat 中正常工作；默认视频实际播放、SteamVR 自动启动与 UAC、hosts 恢复及其他专项的验证范围继续见构建报告。
 
 源码提交：`{info['git_sha']}`（`main`）。
 

@@ -20,6 +20,7 @@ from .release_resources import (
     describe_app_icons, describe_cooldown,
 )
 from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES
+from .windows_taskbar import describe_windows_taskbar
 
 
 def _check_openvr_library(report: dict) -> None:
@@ -69,6 +70,8 @@ def inspect_demo(window) -> dict:
                 Path(sys.executable).read_bytes(), (root / APP_ICON_ICO_RELATIVE_PATH).read_bytes(),
             )
             report["checks"].append("windows_executable_icon")
+            report["windows_taskbar"] = describe_windows_taskbar(window)
+            report["checks"].append("windows_taskbar_identity_and_icon")
         _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))

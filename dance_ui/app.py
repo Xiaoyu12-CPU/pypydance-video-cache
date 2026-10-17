@@ -21,6 +21,7 @@ from .appearance import AppearancePage
 from .controller import CoreController
 from .pages import Pages, button, row
 from .theme import ThemeStore
+from .windows_taskbar import set_windows_application_identity
 from .widgets import Backdrop, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
 
 
@@ -844,6 +845,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.smoke_test_report is not None and not args.demo:
         parser.error("--smoke-test-report 必须与 --demo 一起使用。")
+    # Establish a stable taskbar identity before QApplication creates any HWND.
+    try:
+        set_windows_application_identity()
+    except OSError as exc:
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        QMessageBox.critical(None, "无法初始化 Windows 任务栏图标", str(exc))
+        return 1
     if os.name == "nt" and not args.demo and not args.no_autostart:
         import dance_cache
         dance_cache.ensure_admin()
