@@ -1983,7 +1983,7 @@ def _cli_listener(kind, data):
 
 def main():
     add_listener(_cli_listener)
-    log("=== VRChat PyPyDance助手 V1.11（命令行模式） ===")
+    log("=== VRChat PyPyDance助手 V1.2（命令行模式） ===")
     log("Bilibili @鲨鲨比亚Sharkspeare")
     if os.name != "nt":
         log("本工具仅支持 Windows")
