@@ -136,7 +136,7 @@ class SteamVRStartupTests(unittest.TestCase):
         self.assertIn(str(Path(startup.sys.executable).resolve()), script)
         self.assertNotIn("dance_cache_gui.py", script)
         self.assertIn("--state-dir", script)
-        self.assertIn(self.directory.name, script)
+        self.assertIn(str(Path(self.directory.name).resolve()), script)
 
     def test_openvr_session_does_not_initialize_headset_system_and_always_shuts_down(self):
         module = types.SimpleNamespace(VRApplication_Background=3, initInternal2=MagicMock(),
