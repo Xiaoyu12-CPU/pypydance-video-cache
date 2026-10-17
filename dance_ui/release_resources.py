@@ -1,8 +1,10 @@
-"""Validate the exact built-in video shipped with the stable application."""
+"""Validate the approved video and application icons shipped with the application."""
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+
+from .exe_icon import ico_frames
 
 
 COOLDOWN_RELATIVE_PATH = "assets/default_cooldown.mp4"
@@ -11,6 +13,37 @@ COOLDOWN_MAX_BYTES = 5 * 1024 * 1024
 # The approved user clip is bundled byte for byte, without recompression.
 COOLDOWN_SIZE_BYTES = 5_073_920
 COOLDOWN_SHA256 = "453650779b315339a1c68b29a4b486d9fe0c85b49b3c8e0a5af94ff770d7b135"
+APP_ICON_PNG_RELATIVE_PATH = "assets/app-icon.png"
+APP_ICON_ICO_RELATIVE_PATH = "assets/app-icon.ico"
+APP_ICON_PNG_SHA256 = "d530500b00d170617e1d750a90ace567ec8cb31105b8c9443189a37229075a11"
+APP_ICON_ICO_SHA256 = "e97f752f3b53121e85c7a0a829de54dccbc2ad1b51fcaaf0ae4024fd32097c62"
+APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def validate_app_icon_bytes(png: bytes, ico: bytes) -> dict:
+    """Identify the approved PNG and its seven-size Windows ICO conversion."""
+    if not png.startswith(b"\x89PNG\r\n\x1a\n") or hashlib.sha256(png).hexdigest() != APP_ICON_PNG_SHA256:
+        raise ValueError("The application PNG icon differs from the approved PY icon.")
+    if hashlib.sha256(ico).hexdigest() != APP_ICON_ICO_SHA256:
+        raise ValueError("The application ICO icon differs from the approved PY icon.")
+    frames = ico_frames(ico)
+    if [(frame["width"], frame["height"]) for frame in frames] != [(size, size) for size in APP_ICON_SIZES]:
+        raise ValueError("The application ICO must contain all seven approved image sizes.")
+    return {
+        "png": {"relative_path": APP_ICON_PNG_RELATIVE_PATH, "size_bytes": len(png),
+                "sha256": APP_ICON_PNG_SHA256},
+        "ico": {"relative_path": APP_ICON_ICO_RELATIVE_PATH, "size_bytes": len(ico),
+                "sha256": APP_ICON_ICO_SHA256},
+        "ico_sizes": list(APP_ICON_SIZES),
+    }
+
+
+def describe_app_icons(root: Path | None = None) -> dict:
+    root = root or Path(__file__).resolve().parents[1]
+    return validate_app_icon_bytes(
+        (root / APP_ICON_PNG_RELATIVE_PATH).read_bytes(),
+        (root / APP_ICON_ICO_RELATIVE_PATH).read_bytes(),
+    )
 
 
 def bundled_cooldown_path() -> Path:

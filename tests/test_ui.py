@@ -346,6 +346,39 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(order, ["admin", "claim"])
         application.assert_not_called()
 
+    def test_main_sets_the_approved_icon_on_the_application_and_window(self):
+        from dance_ui import app as app_module
+        from dance_ui.widgets import app_icon
+
+        original_window = app_module.MainWindow
+
+        def make_window(controller, store):
+            window = original_window(controller, store)
+            self.windows.append((window, controller))
+            return window
+
+        def check_icons():
+            window, _ = self.windows[-1]
+            expected = app_icon().pixmap(64, 64).toImage()
+            self.assertEqual(self.app.windowIcon().pixmap(64, 64).toImage(), expected)
+            self.assertEqual(window.windowIcon().pixmap(64, 64).toImage(), expected)
+            return 0
+
+        with patch.object(app_module, "MainWindow", side_effect=make_window), \
+                patch.object(self.app, "exec", side_effect=check_icons):
+            self.assertEqual(app_module.main(["--demo", "--state-dir", str(self.root / "main-demo")]), 0)
+
+    def test_missing_application_icon_uses_the_initialization_error_dialog(self):
+        from dance_ui import app as app_module
+
+        with patch.object(app_module, "app_icon", side_effect=FileNotFoundError("assets/app-icon.png")), \
+                patch.object(app_module, "ThemeStore") as store, \
+                patch.object(app_module.QMessageBox, "critical") as critical:
+            self.assertEqual(app_module.main(["--demo", "--state-dir", str(self.root)]), 1)
+        store.assert_not_called()
+        critical.assert_called_once()
+        self.assertIn("app-icon.png", critical.call_args.args[2])
+
     def test_no_autostart_still_claims_instance_and_releases_on_initialization_failure(self):
         from dance_ui import app as app_module
 
@@ -775,7 +808,8 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report["theme_name"], "浅色")
         self.assertEqual(report["theme_id"], "light")
         self.assertEqual(report["checks"], [
-            "demo_mode", "bundled_cooldown_video", "builtin_light_theme", "pillow_generated_background",
+            "demo_mode", "bundled_cooldown_video", "application_icon_resources", "application_window_icon",
+            "builtin_light_theme", "pillow_generated_background",
             "embedded_svg_icons", "four_page_navigation_and_rendering",
         ])
         self.assertEqual(report["bundled_cooldown_video"]["relative_path"], "assets/default_cooldown.mp4")

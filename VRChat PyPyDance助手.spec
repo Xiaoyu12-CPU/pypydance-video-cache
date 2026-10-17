@@ -15,6 +15,8 @@ a = Analysis(
         (str(project_root / 'README.md'), '.'),
         (str(project_root / 'LICENSE'), '.'),
         (str(project_root / 'assets' / 'default_cooldown.mp4'), 'assets'),
+        (str(project_root / 'assets' / 'app-icon.png'), 'assets'),
+        (str(project_root / 'assets' / 'app-icon.ico'), 'assets'),
     ],
     hiddenimports=[],
     hookspath=[str(project_root / 'tools' / 'pyinstaller_hooks')],
@@ -39,6 +41,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     uac_admin=True,
+    icon=str(project_root / 'assets' / 'app-icon.ico'),
 )
 
 coll = COLLECT(

@@ -7,7 +7,7 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import Qt, QPoint, QPointF
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
@@ -349,19 +349,14 @@ def set_status(widget: QLabel, text: str, state: str = "muted"):
 
 
 def app_icon() -> QIcon:
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(QColor("#3875ff"), 3))
-    from PySide6.QtCore import QPointF
-    from PySide6.QtGui import QPolygonF
-    painter.drawPolygon(QPolygonF([QPointF(32, 7), QPointF(55, 20), QPointF(55, 46),
-                                  QPointF(32, 58), QPointF(9, 46), QPointF(9, 20)]))
-    painter.drawLine(9, 20, 32, 33)
-    painter.drawLine(55, 20, 32, 33)
-    painter.drawLine(32, 33, 32, 58)
-    painter.end()
+    # PyInstaller preserves this module under _internal/dance_ui and bundles
+    # the artwork under _internal/assets, matching the source checkout layout.
+    path = Path(__file__).resolve().parents[1] / "assets" / "app-icon.png"
+    if not path.is_file():
+        raise FileNotFoundError(f"程序图标文件不存在：{path}")
+    pixmap = QPixmap(str(path))
+    if pixmap.isNull():
+        raise ValueError(f"无法读取程序图标：{path}")
     return QIcon(pixmap)
 
 

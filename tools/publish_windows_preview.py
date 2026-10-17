@@ -14,21 +14,24 @@ import sys
 from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dance_ui.exe_icon import describe_embedded_icon
 from dance_ui.release_resources import (
+    APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
     COOLDOWN_ARCHIVE_PATH,
-    describe_cooldown, validate_cooldown_bytes,
+    describe_app_icons, describe_cooldown, validate_app_icon_bytes, validate_cooldown_bytes,
 )
 
 
 REPOSITORY = "Xiaoyu12-CPU/pypydance-video-cache"
-TAG = "v2.0.1"
-TITLE = "PyPyDance Cache 2.0.1（Windows 正式版）"
+TAG = "v3.0.0"
+TITLE = "PyPyDance Cache 3.0.0（Windows 正式版）"
 PUBLISH_MARKER = "[publish-release]"
 REQUIRED_SMOKE_CHECKS = {
     "demo_mode", "builtin_light_theme", "pillow_generated_background",
     "embedded_svg_icons", "four_page_navigation_and_rendering",
     "openvr_library_loaded_without_initialization",
     "bundled_cooldown_video",
+    "application_icon_resources", "application_window_icon", "windows_executable_icon",
 }
 
 
@@ -56,9 +59,14 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
     info = json.loads(info_path.read_text(encoding="utf-8"))
     if info["git_sha"] != expected_sha:
         raise ValueError("The artifact was not built from this workflow's exact commit.")
+    if "v" + info.get("application_version", "") != TAG:
+        raise ValueError("The release application version does not match the requested tag.")
     source_video = describe_cooldown()
     if info.get("bundled_cooldown_video") != source_video:
         raise ValueError("The release video metadata differs from the approved source video.")
+    source_icons = describe_app_icons()
+    if info.get("bundled_application_icons") != source_icons:
+        raise ValueError("The release application icons differ from the approved source icons.")
     tests, smoke = info["isolated_tests"], info["frozen_demo_smoke"]
     if (tests["status"] != "passed" or tests["platform"] != "win32"
             or tests["tests_run"] < 1 or tests["passed"] != tests["tests_run"]
@@ -69,6 +77,9 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
             or "v" + smoke["application_version"] != TAG
             or smoke.get("theme_id") != "light"
             or smoke.get("bundled_cooldown_video") != source_video
+            or smoke.get("bundled_application_icons") != source_icons
+            or not info.get("windows_executable_icon")
+            or smoke.get("windows_executable_icon") != info["windows_executable_icon"]
             or not REQUIRED_SMOKE_CHECKS.issubset(smoke.get("checks", []))):
         raise ValueError("The frozen Windows executable has not passed the expected stable checks.")
     with ZipFile(archive) as zipped:
@@ -85,6 +96,15 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
             raise ValueError("The release ZIP is missing the bundled cooldown video.")
         if validate_cooldown_bytes(zipped.read(COOLDOWN_ARCHIVE_PATH)) != source_video:
             raise ValueError("The release ZIP cooldown video differs from the approved source video.")
+        paths = ["PyPyDanceCache/_internal/" + path for path in (APP_ICON_PNG_RELATIVE_PATH, APP_ICON_ICO_RELATIVE_PATH)]
+        if not all(path in members for path in paths):
+            raise ValueError("The release ZIP is missing application icon resources.")
+        if validate_app_icon_bytes(*(zipped.read(path) for path in paths)) != source_icons:
+            raise ValueError("The release ZIP application icons differ from the approved source icons.")
+        if describe_embedded_icon(
+            zipped.read("PyPyDanceCache/PyPyDanceCache.exe"), zipped.read(paths[1]),
+        ) != info["windows_executable_icon"]:
+            raise ValueError("The release executable icon differs from the tested Windows executable.")
         if json.loads(zipped.read("PyPyDanceCache/docs/build-info.json")) != info:
             raise ValueError("The bundled and attached build reports differ.")
     return info, [archive, checksum, info_path]
@@ -117,13 +137,13 @@ def tag_commit() -> str | None:
 def notes(info: dict, checksum: str) -> str:
     smoke, tests = info["frozen_demo_smoke"], info["isolated_tests"]
     run_url = f"https://github.com/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    return f"""PyPyDance Cache 2.0.1 Windows x64 正式版。
+    return f"""PyPyDance Cache 3.0.0 Windows x64 正式版。
 
 ## 本次更新
 
-- 原样内置用户提供的默认 CoolDown 放松视频，不压缩、不降低音频码率；原文件 5,073,920 字节（约 4.84 MiB），时长约 3 分 16 秒，无需另行选择文件。
-- 首次使用或 CoolDown 路径留空时使用内置视频；已有自选本地视频配置继续保留，也可在设置页切回内置视频。
-- 仍需在“运行”页手动启用 CoolDown，随后在下一次视频请求时替换播放。启动程序或应用默认视频设置不会自动开始替换。
+- 使用用户确认的黑白对话框 PY 图标，替换 Windows exe、程序窗口及任务栏图标。
+- Windows exe 嵌入 16 / 24 / 32 / 48 / 64 / 128 / 256 像素图标，适配不同显示尺寸；透明 PNG 原图同时随包保留。
+- 本次按用户指定发布为 v3.0.0。原有功能和默认 CoolDown 视频保持现有行为，视频未重新编码或降低音频码率。
 - Windows 包继续不附带“小余12主题”及其背景。
 
 ## 下载与启动
@@ -138,10 +158,11 @@ def notes(info: dict, checksum: str) -> str:
 - Windows 完整隔离测试：**{tests['tests_run']} 项通过，失败 0、错误 0、跳过 0**。
 - 实际打包 exe 以 Windows Qt 平台启动演示并自动退出；内置浅蓝主题、四页导航渲染、SVG 图标、Pillow 背景渲染和 OpenVR DLL 加载检查均通过。
 - exe 演示实际读取随包 MP4，核对 ISO MP4 文件标记、文件大小和 SHA-256；打包及发布校验确认源码资源、ZIP 内视频与构建报告一致。此检查不代表已在 VRChat 中播放。
-- Qt / PySide6 {smoke['qt_version']}，Pillow {smoke['pillow_version']}。完整环境、默认视频大小与校验值见附件及包内 `docs/build-info.json`。
+- exe 演示、打包及发布校验读取实际 PE 的 RT_GROUP_ICON / RT_ICON，确认七个尺寸的嵌入图像与批准 ICO 逐帧一致；同时核验 PNG / ICO 源文件、包内资源和 SHA-256。
+- Qt / PySide6 {smoke['qt_version']}，Pillow {smoke['pillow_version']}。完整环境、视频及图标校验值见附件及包内 `docs/build-info.json`。
 - [本次 Windows 构建与测试记录]({run_url})。
 
-**待用户实机确认：**此次新增默认视频在 Windows + VRChat 中的实际播放。用户此前已反馈旧版本在 Windows + VRChat 中正常工作，该结果不替代新版视频验收。SteamVR 自动启动与 UAC、hosts 恢复及其他专项的验证范围继续见构建报告。
+**待用户实机确认：**Windows 资源管理器、任务栏及不同显示缩放下的图标外观。用户此前已反馈旧版本在 Windows + VRChat 中正常工作；默认视频实际播放、SteamVR 自动启动与 UAC、hosts 恢复及其他专项的验证范围继续见构建报告。
 
 源码提交：`{info['git_sha']}`（`main`）。
 

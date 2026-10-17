@@ -76,6 +76,12 @@ API 依据：[Valve OpenVR 接口定义](https://github.com/ValveSoftware/openvr
 
 `cdn-favorites.json` 与 `appearance.json` 放在同一个本机状态目录，保存去重后的公网 IPv4 地址列表，不随程序发布。测速结果按速度排序并支持收藏；收藏可再次选择使用或删除。收藏与业务设置分开原子保存，收藏操作不提交其他草稿，使用收藏只填入优选 IP，需“应用更改”后生效。历史收藏不代表当前可用性或速度。演示默认使用临时目录；传入 `--state-dir` 可验证收藏跨启动保留。
 
+### 程序图标（3.0.0）
+
+`assets/app-icon.png` 是用户确认的透明背景黑白 PY 对话框图标，原 PNG 保持不变；`assets/app-icon.ico` 从该图导出 16、24、32、48、64、128、256 像素七种尺寸，用于 Windows exe 原生图标。Qt 全局应用图标和窗口图标使用同一 PNG，打包时同时保留 PNG 与 ICO 资源。
+
+Windows 构建脚本与 spec 均将 ICO 嵌入 exe。冻结检查不仅核对包内文件，还读取 exe 的 PE 图标资源，比较其图像帧与批准的 ICO，防止只替换窗口图标却遗漏资源管理器图标。资源大小、SHA-256 和检查结果随构建报告发布。
+
 ### 内置 CoolDown 视频（2.0.1）
 
 `assets/default_cooldown.mp4` 使用用户提供的原文件，未重新编码或降低音频码率。文件为 H.264/AAC、640×360、196.062 秒、5,073,920 字节（约 4.84 MiB）；SHA-256 为 `453650779b315339a1c68b29a4b486d9fe0c85b49b3c8e0a5af94ff770d7b135`。
@@ -159,7 +165,7 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 
 该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、默认浅蓝主题及使用临时合成图片的 Pillow 到 Qt 背景渲染，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
 
-普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v2.0.1`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
+普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v3.0.0`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
 
 冻结演示检查会加载打包的 Windows x64 OpenVR DLL，但不初始化或注册 SteamVR；只收集本机平台的 64 位 DLL 与许可。冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
 

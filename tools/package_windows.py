@@ -17,9 +17,11 @@ import zipfile
 # This file is also invoked directly as ``python tools/package_windows.py``.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dance_ui import __version__
+from dance_ui.exe_icon import describe_embedded_icon
 from dance_ui.release_resources import (
+    APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
     COOLDOWN_ARCHIVE_PATH, COOLDOWN_RELATIVE_PATH,
-    describe_cooldown, validate_cooldown_bytes,
+    describe_app_icons, describe_cooldown, validate_app_icon_bytes, validate_cooldown_bytes,
 )
 
 
@@ -52,6 +54,8 @@ def main() -> int:
         "启动.bat",
         "打开演示.bat",
         "_internal/" + COOLDOWN_RELATIVE_PATH,
+        "_internal/" + APP_ICON_PNG_RELATIVE_PATH,
+        "_internal/" + APP_ICON_ICO_RELATIVE_PATH,
     )
     for relative in required:
         if not (bundle / relative).is_file():
@@ -64,6 +68,13 @@ def main() -> int:
     video_info = describe_cooldown()
     if describe_cooldown(bundle / "_internal" / COOLDOWN_RELATIVE_PATH) != video_info:
         raise SystemExit("The bundled cooldown video does not match the source video.")
+    icons_info = describe_app_icons()
+    if describe_app_icons(bundle / "_internal") != icons_info:
+        raise SystemExit("The bundled application icons differ from the approved source icons.")
+    embedded_icon = describe_embedded_icon(
+        (bundle / "PyPyDanceCache.exe").read_bytes(),
+        (bundle / "_internal" / APP_ICON_ICO_RELATIVE_PATH).read_bytes(),
+    )
 
     tests = read_json(args.reports / "unit-tests.json")
     smoke = read_json(args.reports / "frozen-smoke.json")
@@ -79,11 +90,14 @@ def main() -> int:
         or smoke.get("platform") != "win32" or smoke.get("qt_platform") != "windows"
         or smoke.get("application_version") != __version__ or smoke.get("theme_id") != "light"
         or smoke.get("bundled_cooldown_video") != video_info
+        or smoke.get("bundled_application_icons") != icons_info
+        or smoke.get("windows_executable_icon") != embedded_icon
         or not {
             "demo_mode", "builtin_light_theme", "pillow_generated_background",
             "embedded_svg_icons", "four_page_navigation_and_rendering",
             "openvr_library_loaded_without_initialization",
             "bundled_cooldown_video",
+            "application_icon_resources", "application_window_icon", "windows_executable_icon",
         }.issubset(smoke.get("checks", []))
     ):
         raise SystemExit("A passing frozen-demo smoke report using native Windows Qt is required.")
@@ -95,6 +109,7 @@ def main() -> int:
     dependencies = (args.reports / "dependencies.txt").read_text(encoding="utf-8-sig").splitlines()
     build_info = {
         "application": "PyPyDanceCache",
+        "application_version": __version__,
         "asset": "PyPyDanceCache-windows-x64.zip",
         "git_sha": commit,
         "git_ref": os.environ.get("GITHUB_REF"),
@@ -109,6 +124,8 @@ def main() -> int:
         "isolated_tests": tests,
         "frozen_demo_smoke": smoke,
         "bundled_cooldown_video": video_info,
+        "bundled_application_icons": icons_info,
+        "windows_executable_icon": embedded_icon,
         "user_reported_validation": {
             "source": "Direct user feedback before the stable release",
             "environment": "Windows running VRChat",
@@ -149,6 +166,17 @@ def main() -> int:
                 raise SystemExit(f"Archive is missing {relative}")
         if validate_cooldown_bytes(zipped.read(COOLDOWN_ARCHIVE_PATH)) != video_info:
             raise SystemExit("The archived cooldown video differs from the source video.")
+        archive_prefix = bundle.name + "/_internal/"
+        if validate_app_icon_bytes(
+            zipped.read(archive_prefix + APP_ICON_PNG_RELATIVE_PATH),
+            zipped.read(archive_prefix + APP_ICON_ICO_RELATIVE_PATH),
+        ) != icons_info:
+            raise SystemExit("The archived application icons differ from the approved source icons.")
+        if describe_embedded_icon(
+            zipped.read(bundle.name + "/PyPyDanceCache.exe"),
+            zipped.read(archive_prefix + APP_ICON_ICO_RELATIVE_PATH),
+        ) != embedded_icon:
+            raise SystemExit("The archived executable icon differs from the tested executable.")
     with archive.open("rb") as archive_file:
         digest = hashlib.file_digest(archive_file, "sha256").hexdigest()
     (args.output / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")

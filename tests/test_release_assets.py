@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import struct
 import sys
 import tempfile
 from types import ModuleType, SimpleNamespace
@@ -18,6 +19,59 @@ from zipfile import ZipFile
 from tools import package_windows as packager
 from tools import publish_windows_preview as publisher
 from dance_ui import release_resources as resources
+from dance_ui.exe_icon import describe_embedded_icon, ico_frames
+
+
+def synthetic_icon_executable(ico: bytes, second_group: bool = False) -> bytes:
+    """Build a minimal PE resource section, never a runnable Windows program."""
+    frames = ico_frames(ico)
+    group = bytearray(struct.pack("<HHH", 0, 1, len(frames)))
+    for index, frame in enumerate(frames, 1):
+        group.extend(struct.pack(
+            "<BBBBHHIH", frame["width"] % 256, frame["height"] % 256, frame["colors"], 0,
+            frame["planes"], frame["bits"], frame["size"], index,
+        ))
+    tree = {3: {index: {1033: frame["data"]} for index, frame in enumerate(frames, 1)},
+            14: {1: {1033: bytes(group)}}}
+    if second_group:
+        tree[14][2] = {1033: bytes(group)}
+    section = bytearray()
+
+    def allocate(size):
+        offset = len(section)
+        section.extend(b"\0" * size)
+        return offset
+
+    def directory(children):
+        offset = allocate(16 + 8 * len(children))
+        struct.pack_into("<HH", section, offset + 12, 0, len(children))
+        for index, (id_, child) in enumerate(sorted(children.items())):
+            if isinstance(child, dict):
+                target = directory(child) | 0x80000000
+            else:
+                target = allocate(16)
+                allocate((-len(section)) % 4)
+                payload = allocate(len(child))
+                section[payload:payload + len(child)] = child
+                struct.pack_into("<IIII", section, target, 0x1000 + payload, len(child), 0, 0)
+            struct.pack_into("<II", section, offset + 16 + index * 8, id_, target)
+        return offset
+
+    directory(tree)
+    pe = bytearray(0x200)
+    pe[:2] = b"MZ"
+    struct.pack_into("<I", pe, 0x3C, 0x80)
+    pe[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", pe, 0x84, 0x8664, 1, 0, 0, 0, 0xF0, 0)
+    struct.pack_into("<H", pe, 0x98, 0x20B)
+    struct.pack_into("<I", pe, 0x98 + 108, 16)
+    struct.pack_into("<II", pe, 0x98 + 128, 0x1000, len(section))
+    pe[0x188:0x190] = b".rsrc\0\0\0"
+    raw_size = ((len(section) + 511) // 512) * 512
+    struct.pack_into("<IIII", pe, 0x190, len(section), 0x1000, raw_size, 0x200)
+    pe.extend(section)
+    pe.extend(b"\0" * (raw_size - len(section)))
+    return bytes(pe)
 
 
 class OpenVRPackagingTests(unittest.TestCase):
@@ -97,10 +151,19 @@ class ReleaseAssetTests(unittest.TestCase):
         self.addCleanup(self.block_process.stop)
         self.cooldown_bytes = resources.bundled_cooldown_path().read_bytes()
         self.cooldown_info = resources.describe_cooldown()
+        source_root = Path(__file__).resolve().parents[1]
+        self.icon_png = (source_root / resources.APP_ICON_PNG_RELATIVE_PATH).read_bytes()
+        self.icon_ico = (source_root / resources.APP_ICON_ICO_RELATIVE_PATH).read_bytes()
+        self.icon_info = resources.describe_app_icons()
+        self.exe_bytes = synthetic_icon_executable(self.icon_ico)
+        self.embedded_icon = describe_embedded_icon(self.exe_bytes, self.icon_ico)
         self.info = {
             "git_sha": self.SHA,
+            "application_version": publisher.TAG.removeprefix("v"),
             "build_platform": "Windows synthetic test fixture",
             "bundled_cooldown_video": dict(self.cooldown_info),
+            "bundled_application_icons": copy.deepcopy(self.icon_info),
+            "windows_executable_icon": dict(self.embedded_icon),
             "isolated_tests": {
                 "status": "passed", "platform": "win32", "tests_run": 3, "passed": 3,
                 "failures": [], "errors": [], "skipped": [],
@@ -112,6 +175,8 @@ class ReleaseAssetTests(unittest.TestCase):
                 "theme_id": "light", "checks": sorted(publisher.REQUIRED_SMOKE_CHECKS),
                 "qt_version": "6.synthetic", "pillow_version": "synthetic",
                 "bundled_cooldown_video": dict(self.cooldown_info),
+                "bundled_application_icons": copy.deepcopy(self.icon_info),
+                "windows_executable_icon": dict(self.embedded_icon),
             },
         }
 
@@ -120,9 +185,14 @@ class ReleaseAssetTests(unittest.TestCase):
         text = json.dumps(info, ensure_ascii=False)
         archive = self.assets / "PyPyDanceCache-windows-x64.zip"
         with ZipFile(archive, "w") as zipped:
-            for name in ("PyPyDanceCache.exe", "_internal/python312.dll", "打开演示.bat"):
+            for name in ("_internal/python312.dll", "打开演示.bat"):
                 zipped.writestr("PyPyDanceCache/" + name, b"tiny synthetic fixture")
-            files = {"_internal/" + resources.COOLDOWN_RELATIVE_PATH: self.cooldown_bytes}
+            files = {
+                "PyPyDanceCache.exe": self.exe_bytes,
+                "_internal/" + resources.COOLDOWN_RELATIVE_PATH: self.cooldown_bytes,
+                "_internal/" + resources.APP_ICON_PNG_RELATIVE_PATH: self.icon_png,
+                "_internal/" + resources.APP_ICON_ICO_RELATIVE_PATH: self.icon_ico,
+            }
             files.update(extra_files or {})
             for name, contents in files.items():
                 if contents is not None:
@@ -137,7 +207,7 @@ class ReleaseAssetTests(unittest.TestCase):
     def publication_environment(self, **overrides):
         event = self.assets / "github-event.json"
         event.write_text(json.dumps({
-            "after": self.SHA, "head_commit": {"message": "Release 2.0.1 [publish-release]"},
+            "after": self.SHA, "head_commit": {"message": "Release 3.0.0 [publish-release]"},
         }), encoding="utf-8")
         environment = {
             "GITHUB_REPOSITORY": publisher.REPOSITORY, "GITHUB_SHA": self.SHA,
@@ -179,6 +249,57 @@ class ReleaseAssetTests(unittest.TestCase):
             with self.subTest(size=len(contents)), self.assertRaises(ValueError):
                 resources.validate_cooldown_bytes(contents)
 
+    def test_approved_icon_resources_have_seven_windows_sizes_and_matching_pe_images(self):
+        self.assertEqual(resources.validate_app_icon_bytes(self.icon_png, self.icon_ico), self.icon_info)
+        self.assertEqual(self.embedded_icon["frame_count"], 7)
+        self.assertEqual(self.embedded_icon["frame_sizes"], [[size, size] for size in resources.APP_ICON_SIZES])
+        self.assertEqual(self.embedded_icon["ico_sha256"], self.icon_info["ico"]["sha256"])
+        self.assertEqual(self.embedded_icon["executable_sha256"], hashlib.sha256(self.exe_bytes).hexdigest())
+
+    def test_rejects_missing_substituted_or_corrupt_icons_despite_a_matching_zip_checksum(self):
+        for path, data in (
+            ("_internal/" + resources.APP_ICON_PNG_RELATIVE_PATH, None),
+            ("_internal/" + resources.APP_ICON_PNG_RELATIVE_PATH, self.icon_png[:-1]),
+            ("_internal/" + resources.APP_ICON_ICO_RELATIVE_PATH, b"stock icon"),
+            ("PyPyDanceCache.exe", b"MZ" + b"\0" * 1024),
+        ):
+            with self.subTest(path=path):
+                self.write_assets(extra_files={path: data})
+                with self.assertRaisesRegex(ValueError, "icon|PE"):
+                    publisher.verify_assets(self.assets, self.SHA)
+
+    def test_rejects_replaced_embedded_image_even_with_original_ico_beside_exe(self):
+        frame = ico_frames(self.icon_ico)[0]["data"]
+        replaced = self.exe_bytes.replace(frame, b"\0" * len(frame), 1)
+        with self.assertRaisesRegex(ValueError, "does not embed"):
+            describe_embedded_icon(replaced, self.icon_ico)
+        self.write_assets(extra_files={"PyPyDanceCache.exe": replaced})
+        with self.assertRaisesRegex(ValueError, "does not embed"):
+            publisher.verify_assets(self.assets, self.SHA)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            describe_embedded_icon(synthetic_icon_executable(self.icon_ico, second_group=True), self.icon_ico)
+
+    def test_rejects_invalid_ico_and_truncated_or_out_of_bounds_pe(self):
+        for ico in (b"", b"fake", self.icon_ico[:30], b"\0\0\x02\0\0\0"):
+            with self.subTest(ico_size=len(ico)), self.assertRaises(ValueError):
+                ico_frames(ico)
+        invalid_rva = bytearray(self.exe_bytes)
+        struct.pack_into("<I", invalid_rva, 0x98 + 128, 0xFFFF0000)
+        for exe in (b"", self.exe_bytes[:100], self.exe_bytes[:0x202], bytes(invalid_rva)):
+            with self.subTest(exe_size=len(exe)), self.assertRaises(ValueError):
+                describe_embedded_icon(exe, self.icon_ico)
+
+    def test_rejects_icon_metadata_that_differs_from_source_smoke_or_executable(self):
+        for section in (None, "frozen_demo_smoke"):
+            for field in ("bundled_application_icons", "windows_executable_icon"):
+                with self.subTest(section=section, field=field):
+                    info = copy.deepcopy(self.info)
+                    target = info if section is None else info[section]
+                    target[field] = {"forged": True}
+                    self.write_assets(info)
+                    with self.assertRaises(ValueError):
+                        publisher.verify_assets(self.assets, self.SHA)
+
     def test_rejects_missing_or_changed_video_despite_a_matching_archive_checksum(self):
         path = "_internal/" + resources.COOLDOWN_RELATIVE_PATH
         for contents in (None, b"", b"not an MP4", self.cooldown_bytes[:-1]):
@@ -200,6 +321,7 @@ class ReleaseAssetTests(unittest.TestCase):
     def test_rejects_wrong_commit_incomplete_tests_and_non_native_smoke(self):
         cases = [
             ("git_sha", None, "b" * 40),
+            ("application_version", None, "2.0.1"),
             ("isolated_tests", "skipped", [{"test": "GUI", "reason": "Qt missing"}]),
             ("isolated_tests", "expected_failures", ["GUI"]),
             ("isolated_tests", "unexpected_successes", ["GUI"]),
@@ -392,6 +514,9 @@ class ReleaseAssetTests(unittest.TestCase):
         (bundle / "THIRD_PARTY_LICENSES").mkdir()
         (bundle / "_internal" / resources.COOLDOWN_RELATIVE_PATH).parent.mkdir(parents=True, exist_ok=True)
         (bundle / "_internal" / resources.COOLDOWN_RELATIVE_PATH).write_bytes(self.cooldown_bytes)
+        (bundle / "_internal" / resources.APP_ICON_PNG_RELATIVE_PATH).write_bytes(self.icon_png)
+        (bundle / "_internal" / resources.APP_ICON_ICO_RELATIVE_PATH).write_bytes(self.icon_ico)
+        (bundle / "PyPyDanceCache.exe").write_bytes(self.exe_bytes)
         reports = self.assets / "reports"
         reports.mkdir()
         for name, value in (
@@ -415,6 +540,8 @@ class ReleaseAssetTests(unittest.TestCase):
             self.assertEqual(info["user_reported_validation"]["environment"], "Windows running VRChat")
             self.assertEqual(info["frozen_demo_smoke"], self.info["frozen_demo_smoke"])
             self.assertEqual(info["bundled_cooldown_video"], self.cooldown_info)
+            self.assertEqual(info["bundled_application_icons"], self.icon_info)
+            self.assertEqual(info["windows_executable_icon"], self.embedded_icon)
             self.assertTrue(info["not_verified"])
             preset = bundle / "_internal/dance_ui/presets/xiaoyu12/background.png"
             preset.parent.mkdir(parents=True)

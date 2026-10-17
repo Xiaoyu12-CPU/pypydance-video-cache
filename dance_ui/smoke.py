@@ -9,12 +9,16 @@ import traceback
 
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import qVersion
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 from PIL import Image, __version__ as pillow_version
 
 from . import __version__
-from .release_resources import describe_cooldown
+from .exe_icon import describe_embedded_icon
+from .release_resources import (
+    APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
+    describe_app_icons, describe_cooldown,
+)
 from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES
 
 
@@ -46,6 +50,25 @@ def inspect_demo(window) -> dict:
         report["checks"].append("demo_mode")
         report["bundled_cooldown_video"] = describe_cooldown()
         report["checks"].append("bundled_cooldown_video")
+        report["bundled_application_icons"] = describe_app_icons()
+        report["checks"].append("application_icon_resources")
+        root = Path(__file__).resolve().parents[1]
+        approved = QIcon(QPixmap(str(root / APP_ICON_PNG_RELATIVE_PATH)))
+        actual_icons = [window.windowIcon()]
+        if sys.platform == "win32" and getattr(sys, "frozen", False):
+            actual_icons.append(QApplication.windowIcon())
+        for icon in actual_icons:
+            if icon.isNull() or approved.isNull():
+                raise ValueError("Qt could not load the approved PY application icon.")
+            for size in (16, 32, 64, 256):
+                if icon.pixmap(size, size).toImage() != approved.pixmap(size, size).toImage():
+                    raise ValueError("The application/window icon differs from the approved PY artwork.")
+        report["checks"].append("application_window_icon")
+        if sys.platform == "win32" and getattr(sys, "frozen", False):
+            report["windows_executable_icon"] = describe_embedded_icon(
+                Path(sys.executable).read_bytes(), (root / APP_ICON_ICO_RELATIVE_PATH).read_bytes(),
+            )
+            report["checks"].append("windows_executable_icon")
         _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))

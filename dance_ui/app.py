@@ -870,6 +870,7 @@ def main(argv=None):
     state_dir = args.state_dir or (Path(temporary.name) if temporary else Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)) / "appearance")
     controller = None
     try:
+        app.setWindowIcon(app_icon())
         store = ThemeStore(state_dir)
         controller = CoreController(demo=args.demo)
         window = MainWindow(controller, store)

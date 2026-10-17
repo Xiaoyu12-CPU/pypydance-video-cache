@@ -52,10 +52,11 @@ from importlib import metadata
 from PySide6 import QtCore, QtGui, QtWidgets
 from PIL import Image
 import PyInstaller
-from dance_ui.release_resources import describe_cooldown
+from dance_ui.release_resources import describe_app_icons, describe_cooldown
 # Importing openvr loads its native library; do not initialize SteamVR here.
 import openvr
 print("Bundled cooldown video:", describe_cooldown())
+print("Approved application icons:", describe_app_icons())
 for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
     print(f"{name}: {metadata.version(name)}")
 '@
@@ -66,11 +67,14 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
         "--clean", "--noconfirm", "--onedir", "--windowed",
         "--name", "PyPyDanceCache",
         "--uac-admin",
+        "--icon", (Join-Path $projectRoot "assets\app-icon.ico"),
         "--distpath", (Join-Path $projectRoot "dist"),
         "--workpath", (Join-Path $projectRoot "build"),
         "--specpath", (Join-Path $projectRoot "build"),
         "--additional-hooks-dir", (Join-Path $projectRoot "tools\pyinstaller_hooks"),
         "--add-data", ((Join-Path $projectRoot "assets\default_cooldown.mp4") + ";assets"),
+        "--add-data", ((Join-Path $projectRoot "assets\app-icon.png") + ";assets"),
+        "--add-data", ((Join-Path $projectRoot "assets\app-icon.ico") + ";assets"),
         "dance_cache_gui.py"
     )
 

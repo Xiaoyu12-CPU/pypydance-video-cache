@@ -1,4 +1,6 @@
-# PyPyDance Cache 2.0.1
+# PyPyDance Cache 3.0.0
+
+<img src="assets/app-icon.png" width="96" alt="PyPyDance Cache PY 图标">
 
 VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原有缓存核心与命令行入口，使用 Qt for Python 重构桌面界面。
 
@@ -34,7 +36,7 @@ VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原�
 
 ## 下载正式版
 
-前往 [v2.0.1 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v2.0.1)，下载 **PyPyDanceCache-windows-x64.zip**，完整解压并运行其中的 `PyPyDanceCache.exe`，无需安装 Python。保留同目录的 `_internal` 和说明文件。
+前往 [v3.0.0 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v3.0.0)，下载 **PyPyDanceCache-windows-x64.zip**，完整解压并运行其中的 `PyPyDanceCache.exe`，无需安装 Python。保留同目录的 `_internal` 和说明文件。
 
 ### 当前界面
 
