@@ -137,7 +137,9 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 .\dist\PyPyDanceCache\PyPyDanceCache.exe --demo --state-dir TEMP_PATH --smoke-test-report REPORT_PATH
 ```
 
-该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、Pillow 到 Qt 的背景渲染及“小余12主题”快照，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`；云端产物不自动发布，发布动作另行显式执行。
+该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、Pillow 到 Qt 的背景渲染及“小余12主题”快照，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
+
+普通推送只构建。显式发布提交在消息中使用 `[publish-preview]`，才会启用限定本 Fork 的发布任务，由 GitHub runner 直接上传完整包。`tools/publish_windows_preview.py` 在上传前后核对测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布为预发行版；不覆盖已发布 Release 或冲突标签，不改动 `main`。
 
 冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
 

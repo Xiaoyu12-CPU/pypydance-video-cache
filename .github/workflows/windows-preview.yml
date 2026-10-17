@@ -139,3 +139,33 @@ jobs:
           path: build-reports/
           if-no-files-found: warn
           retention-days: 30
+
+  publish-preview:
+    needs: windows-x64
+    if: >-
+      github.repository == 'Xiaoyu12-CPU/pypydance-video-cache' &&
+      github.event_name == 'push' &&
+      contains(github.event.head_commit.message, '[publish-preview]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download this run's verified Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: PyPyDanceCache-windows-x64
+          path: release
+
+      - name: Publish the requested Windows preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/publish_windows_preview.py --assets release
