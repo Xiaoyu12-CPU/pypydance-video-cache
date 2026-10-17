@@ -28,15 +28,19 @@ VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。本分支�
 
 业务配置编辑后通过**应用更改**提交。修改 YouTube 缓存开关或保存目录前，需要先停止服务；修改目录时还需等待后台下载和曲库任务结束。应用后再次启动服务。外观调整立即预览并自动保存，与业务配置分开。
 
+程序随附用户在 Mac 演示窗口保存的 **“小余12主题”**，包括原背景图、紫色强调色、半透明导航与卡片。全新的外观目录首次选中此主题，并采用该快照的阅读偏好；已有外观配置保留当前主题和个人调整，可在“外观”页选择“小余12主题”。浅色、深色基础方案继续保留。
+
+主题与背景已纳入源码及 Windows 打包资源，不依赖 Mac 上的图片路径。随附主题可以编辑、复制和重置，原始方案随程序保留；重置该主题或分组会回到保存的“小余12”快照。之后的个人调整仍保存在当前电脑的外观目录，不会自动更新仓库快照。
+
 ### 当前界面
 
 下图由真实 Qt 界面的 `--demo` 数据生成。
 
-![运行页 · 浅色](docs/screenshots/run-light.png)
+![运行页 · 小余12主题](docs/screenshots/run-xiaoyu12.png)
 
 ![外观页](docs/screenshots/appearance.png)
 
-更多画面：[深色运行页](docs/screenshots/run-dark.png)、[存储页](docs/screenshots/storage.png)、[曲库维护](docs/screenshots/storage-maintenance.png)、[设置页](docs/screenshots/settings.png)。
+更多画面：[浅色运行页](docs/screenshots/run-light.png)、[深色运行页](docs/screenshots/run-dark.png)、[存储页](docs/screenshots/storage.png)、[曲库维护](docs/screenshots/storage-maintenance.png)、[设置页](docs/screenshots/settings.png)。
 
 ### 缓存行为
 
@@ -117,7 +121,7 @@ py -3.12 -m venv .venv
 | 外观与导入背景 | Qt `QStandardPaths.AppLocalDataLocation` 下的 `appearance` 目录，以当前系统实际路径为准 |
 | 演示外观状态 | 默认临时目录；指定 `--state-dir` 后使用并保留指定目录 |
 
-外观应用标识为组织 `Xiaoyu12-CPU`、应用 `PyPyDanceCache`。导入背景复制到外观数据目录，保留原图片；主题及背景与视频缓存分开。
+外观应用标识为组织 `Xiaoyu12-CPU`、应用 `PyPyDanceCache`。个人导入背景复制到外观数据目录，保留原图片；随附“小余12主题”的原背景从只读程序资源加载。主题及背景与视频缓存分开。
 
 业务配置继续写在程序旁，请把程序放在适合当前账户读写的目录。仅备份 exe 不会包含配置、曲库和个人主题。
 

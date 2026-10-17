@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Compatibility build entry. Prefer build_windows.ps1 to also collect notices.
-# User configuration, themes, backgrounds, and cached videos are not bundled.
+# User configuration, custom themes/backgrounds, and cached videos are not bundled.
+# Shipped appearance presets are included as read-only application resources.
 
 from pathlib import Path
 
@@ -13,6 +14,7 @@ a = Analysis(
     datas=[
         (str(project_root / 'README.md'), '.'),
         (str(project_root / 'LICENSE'), '.'),
+        (str(project_root / 'dance_ui' / 'presets'), 'dance_ui/presets'),
     ],
     hiddenimports=[],
     hookspath=[],

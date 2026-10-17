@@ -56,9 +56,19 @@ QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation) / appearanc
 
 应用标识：组织 `Xiaoyu12-CPU`、应用 `PyPyDanceCache`。以 Qt 在当前系统返回的实际路径为准，不硬编码用户名或盘符。
 
-主题存储包含 `appearance.json` 与 `backgrounds/`。导入背景复制到此目录，原图不修改；缺失背景时回退主题底色。可编辑主题不能写入 PyInstaller 的 `_internal` 或解包资源目录。
+主题存储包含 `appearance.json` 与 `backgrounds/`。个人导入背景复制到此目录，原图不修改；随附背景从程序资源加载，所有副本均缺失时回退主题底色。可编辑主题不能写入 PyInstaller 的 `_internal` 或解包资源目录。
 
 `--demo` 未指定状态目录时，使用临时目录并在正常退出后清理。需要复查保存结果时传入专用目录，例如 `.demo-state`，避免与真实用户数据共用。
+
+### 随附的小余12主题
+
+`dance_ui/presets/xiaoyu12/theme.json` 保存用户在 Mac 演示窗口创建的“小余12主题”、阅读偏好和背景校验值；同目录的 `background.png` 为用户选用的原图副本。两者作为项目资源提交，后续上传和打包时保留，不使用开发机的绝对路径。
+
+`ThemeStore` 保持 `light` / `dark` 基础主题，另载入随附快照。全新外观目录选中“小余12主题”并初始化快照偏好；已有配置只补充缺失的随附主题，同 ID 的个人配色、名称、当前选择及阅读偏好不覆盖。旧文件缺少选择或偏好字段时仍按原来的浅色和默认偏好回退。
+
+随附主题不可删除，但可编辑、复制和撤销；重置当前主题或分组以快照为初值，自定义副本仍按原浅色/深色基础重置。个人导入的同名背景优先从外观目录加载，缺失时可回退随附原图；包内资源只读，配置与个人图片继续写在用户可写目录。资源缺失或损坏时显示警告，并保留旧配置文件。
+
+Windows 脚本和根目录 spec 均需收集整个 `dance_ui/presets` 到 `dance_ui/presets`。PyInstaller 6 onedir 默认布局中位于 `_internal/dance_ui/presets`，代码根据模块 `__file__` 定位，禁止硬编码 Mac 路径。打包后仍须在 Windows 实际验证背景解码与启动。
 
 ## 页面职责与状态约束
 
@@ -113,7 +123,7 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 - 启动文件：`dist\PyPyDanceCache\PyPyDanceCache.exe`。
 - 分发完整目录，包括 `_internal`，不能单独复制 exe。
 - `--uac-admin` 会让打包版每次启动请求提权，包括 `--demo`。从源码运行演示无需因为缓存服务申请提权。
-- 主题、背景、个人配置和视频不打入程序包；其存储规则见上文。
+- 随附“小余12主题”和原背景作为只读资源打包；其他个人主题、背景、配置和视频不打入程序包，其存储规则见上文。
 - 构建脚本不签名、不上传、不创建 Release 或 PR。
 - `--clean --noconfirm` 会替换同名构建产物，不要把正式配置或个人视频保存在构建输出目录中。
 

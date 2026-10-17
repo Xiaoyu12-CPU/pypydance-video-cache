@@ -26,6 +26,7 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_IMAGE_EDGE = 16_384
 HISTORY_LIMIT = 50
+BUNDLED_PRESET_DIR = Path(__file__).resolve().parent / "presets" / "xiaoyu12"
 
 COLOR_FIELDS = frozenset({
     "accent", "background_color", "overlay_color", "nav_background", "nav_text",
@@ -267,7 +268,12 @@ class ThemeStore:
         self._edit_recorded = False
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.background_dir.mkdir(parents=True, exist_ok=True)
-        self._state = self._defaults()
+        self._provided_themes = copy.deepcopy(BUILTIN_THEMES)
+        self._bundled_backgrounds: dict[str, Path] = {}
+        self._default_theme = "light"
+        self._default_preferences = dict(DEFAULT_PREFERENCES)
+        self._load_bundled_preset()
+        self._state = self._defaults(bundled=True)
         if self.path.exists():
             try:
                 if self.path.stat().st_size > 2 * 1024 * 1024:
@@ -284,12 +290,52 @@ class ThemeStore:
         else:
             self._write(self._state)
 
-    @staticmethod
-    def _defaults() -> dict[str, Any]:
+    def _load_bundled_preset(self) -> None:
+        """Read the shipped snapshot without writing into packaged resources."""
+        try:
+            manifest = json.loads((BUNDLED_PRESET_DIR / "theme.json").read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or manifest.get("version") != 1:
+                raise ThemeError("随附主题版本无效。")
+            raw = manifest["theme"]
+            if not isinstance(raw, dict):
+                raise ThemeError("随附主题格式无效。")
+            theme_id = raw["id"]
+            if not isinstance(theme_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", theme_id) or theme_id in BUILTIN_THEMES:
+                raise ThemeError("随附主题标识无效。")
+            base = raw["base"]
+            if base not in BUILTIN_THEMES:
+                raise ThemeError("随附主题基础配色无效。")
+            theme = copy.deepcopy(BUILTIN_THEMES[base])
+            theme.update({key: _theme_value(key, raw[key]) for key in THEME_FIELDS})
+            theme.update(id=theme_id, name=self._name(raw["name"]), base=base, builtin=True)
+            preferences = dict(DEFAULT_PREFERENCES)
+            preferences.update({key: _preference_value(key, value) for key, value in manifest["preferences"].items()})
+            if manifest["background_file"] != "background.png":
+                raise ThemeError("随附主题背景文件名无效。")
+            background = BUNDLED_PRESET_DIR / "background.png"
+            if background.stat().st_size > MAX_IMAGE_BYTES:
+                raise ThemeError("随附主题背景过大。")
+            data = background.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            extension, width, height = _image_info(data)
+            if (digest != manifest["background_sha256"] or extension != "png"
+                    or theme["background_image"] != "backgrounds/" + digest + ".png"
+                    or min(width, height) < 1 or width * height > MAX_IMAGE_PIXELS
+                    or max(width, height) > MAX_IMAGE_EDGE):
+                raise ThemeError("随附主题背景校验失败。")
+        except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as error:
+            self.warnings.append("无法载入随附的小余12主题，已保留其他主题。" + str(error))
+            return
+        self._provided_themes[theme_id] = theme
+        self._bundled_backgrounds[theme["background_image"]] = background
+        self._default_theme = theme_id
+        self._default_preferences = preferences
+
+    def _defaults(self, *, bundled: bool = False) -> dict[str, Any]:
         return {
-            "version": 1, "active_theme": "light",
-            "themes": copy.deepcopy(list(BUILTIN_THEMES.values())),
-            "preferences": dict(DEFAULT_PREFERENCES),
+            "version": 1, "active_theme": self._default_theme if bundled else "light",
+            "themes": copy.deepcopy(list(self._provided_themes.values())),
+            "preferences": dict(self._default_preferences if bundled else DEFAULT_PREFERENCES),
         }
 
     def _normalise_document(self, raw: Any) -> dict[str, Any]:
@@ -308,8 +354,8 @@ class ThemeStore:
             base = theme_id if theme_id in BUILTIN_THEMES else item.get("base", "light")
             if not isinstance(base, str) or base not in BUILTIN_THEMES:
                 base = "light"
-            theme = copy.deepcopy(BUILTIN_THEMES[base])
-            theme.update(id=theme_id, builtin=theme_id in BUILTIN_THEMES, base=base)
+            theme = copy.deepcopy(self._provided_themes.get(theme_id, BUILTIN_THEMES[base]))
+            theme.update(id=theme_id, builtin=theme_id in self._provided_themes, base=base)
             name = item.get("name", theme["name"])
             theme["name"] = name.strip()[:60] if isinstance(name, str) and name.strip() else "未命名主题"
             for key in THEME_FIELDS:
@@ -320,9 +366,9 @@ class ThemeStore:
                         self.warnings.append("已恢复无效的主题设置：" + key)
             loaded.append(theme)
             ids.add(theme_id)
-        for theme_id, theme in BUILTIN_THEMES.items():
+        for index, (theme_id, theme) in enumerate(self._provided_themes.items()):
             if theme_id not in ids:
-                loaded.insert(0 if theme_id == "light" else 1, copy.deepcopy(theme))
+                loaded.insert(index, copy.deepcopy(theme))
         state["themes"] = loaded
         available = {theme["id"] for theme in loaded}
         if isinstance(raw.get("active_theme"), str) and raw["active_theme"] in available:
@@ -473,7 +519,7 @@ class ThemeStore:
     def delete(self, theme_id: str) -> bool:
         target = self._find(self._state, theme_id)
         if target["builtin"]:
-            raise ThemeError("内置浅色和深色主题需要保留；可以重置其设置。")
+            raise ThemeError("随程序提供的主题需要保留；可以编辑、复制或重置其设置。")
         self.end_edit()
         candidate = copy.deepcopy(self._state)
         candidate["themes"] = [theme for theme in candidate["themes"] if theme["id"] != theme_id]
@@ -496,14 +542,15 @@ class ThemeStore:
     def reset_current(self) -> bool:
         self.end_edit()
         active = self.active
-        defaults = BUILTIN_THEMES[active["base"]]
+        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
         return self.change({key: defaults[key] for key in THEME_FIELDS})
 
     def reset_group(self, group: str) -> bool:
         if group not in THEME_GROUPS:
             raise ThemeError("未识别的设置分组。")
         self.end_edit()
-        defaults = BUILTIN_THEMES[self.active["base"]]
+        active = self.active
+        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
         return self.change({key: defaults[key] for key in THEME_GROUPS[group]})
 
     def reset_preferences(self) -> bool:
@@ -517,9 +564,14 @@ class ThemeStore:
         try:
             value = _image_reference(value)
             path = (self.root_dir / value).resolve()
-            if path.parent != self.background_dir.resolve() or not path.is_file():
+            if path.parent != self.background_dir.resolve():
                 return None
-            return path
+            if path.is_file():
+                return path
+            # Bundled backgrounds remain read-only. User imports still live in
+            # the writable appearance directory and take precedence.
+            bundled = self._bundled_backgrounds.get(value)
+            return bundled if bundled is not None and bundled.is_file() else None
         except (OSError, ThemeError, RuntimeError):
             return None
 

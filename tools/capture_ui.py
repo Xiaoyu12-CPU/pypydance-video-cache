@@ -59,6 +59,14 @@ def main():
                 raise OSError("Unable to save " + str(path))
             print(path)
 
+        if store.active_id not in ("light", "dark"):
+            capture("run-xiaoyu12")
+            window.navigate(3)
+            capture("appearance-xiaoyu12")
+        # Keep the historical light/dark filenames accurate even when a shipped
+        # preset is the default for a fresh appearance directory.
+        store.select("light")
+        window.apply_appearance()
         for index, name in enumerate(("run-light", "storage", "settings", "appearance")):
             window.navigate(index)
             capture(name)

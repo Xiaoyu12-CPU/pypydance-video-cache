@@ -62,6 +62,7 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller"):
         "--distpath", (Join-Path $projectRoot "dist"),
         "--workpath", (Join-Path $projectRoot "build"),
         "--specpath", (Join-Path $projectRoot "build"),
+        "--add-data", ((Join-Path $projectRoot "dance_ui\presets") + ";dance_ui/presets"),
         "dance_cache_gui.py"
     )
 

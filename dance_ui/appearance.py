@@ -584,8 +584,8 @@ class AppearancePage(QWidget):
         active = self.store.active
         self.undo_button.setEnabled(self.store.can_undo)
         self.delete_button.setEnabled(not active["builtin"])
-        self.delete_button.setToolTip("内置主题可以编辑和重置，需要保留。" if active["builtin"] else "删除此主题，可通过撤销恢复。")
-        self.theme_kind.setText("内置主题 · 可编辑" if active["builtin"] else "自定义主题")
+        self.delete_button.setToolTip("随程序提供的主题可以编辑和重置，需要保留。" if active["builtin"] else "删除此主题，可通过撤销恢复。")
+        self.theme_kind.setText("随附主题 · 可编辑" if active["builtin"] else "自定义主题")
         image = self.store.background_path(active)
         if image is not None:
             self.image_status.setText(image.suffix.lstrip(".").upper() + " 背景 · 已保存在应用内")
@@ -701,7 +701,7 @@ class AppearancePage(QWidget):
 
     def _reset_current(self) -> None:
         if self._flush_pending():
-            self._perform(self.store.reset_current, refresh=True, message="已恢复当前主题的基础配色，可撤销。")
+            self._perform(self.store.reset_current, refresh=True, message="已恢复当前主题的初始设置，可撤销。")
 
     def _reset_group(self, group: str) -> None:
         if self._flush_pending():
