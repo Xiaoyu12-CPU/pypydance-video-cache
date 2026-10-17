@@ -83,6 +83,8 @@ class CoreTests(unittest.TestCase):
         self.dc.MAPPING_PATH = str(self.root / "mapping.json")
         self.dc.HOSTS_PATH = str(self.root / "hosts-never-used")
         self.dc.VRC_LOG_DIR = str(self.root / "missing-logs")
+        self.builtin_cooldown = self.root / "bundled-resources" / "assets" / "default_cooldown.mp4"
+        self.dc.DEFAULT_COOLDOWN_PATH = str(self.builtin_cooldown)
         self.dc._config = self.dc._validated_config({
             **self.dc.DEFAULT_CONFIG,
             "cache_dir": str(self.cache), "library_dir": str(self.library),
@@ -398,6 +400,90 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(self.dc._remote_size("video.mp4"), 123)
         self.assertEqual(response.read_calls, 0)
         self.assertTrue(connection.closed)
+
+    def write_builtin_cooldown(self, content=b"bundled relax video"):
+        self.builtin_cooldown.parent.mkdir(parents=True, exist_ok=True)
+        self.builtin_cooldown.write_bytes(content)
+        return str(self.builtin_cooldown)
+
+    def test_new_and_legacy_empty_configs_use_builtin_without_saving_installation_path(self):
+        expected = self.write_builtin_cooldown()
+        config_path = self.root / "config.json"
+        for initial in (None, {}, {"cooldown_file": ""}):
+            with self.subTest(config=initial):
+                if initial is None:
+                    config_path.unlink(missing_ok=True)
+                else:
+                    config_path.write_text(json.dumps(initial), encoding="utf-8")
+                self.dc.load_config()
+                self.assertTrue(self.dc.get_cooldown_state()["available"])
+                self.assertEqual(self.dc.cooldown_file(), expected)
+                self.assertEqual(self.dc.get_config()["cooldown_file"], "")
+                self.dc.save_config()
+                self.assertEqual(json.loads(config_path.read_text(encoding="utf-8"))["cooldown_file"], "")
+
+    def test_cooldown_preserves_custom_choice_and_can_restore_builtin(self):
+        builtin = self.write_builtin_cooldown()
+        custom = self.root / "my-relax.mp4"
+        custom.write_bytes(b"personal video")
+        self.dc.update_config({"cooldown_file": str(custom)})
+        self.dc.load_config()
+        self.assertEqual(self.dc.cooldown_file(), str(custom))
+        self.assertEqual(self.dc.get_config()["cooldown_file"], str(custom))
+        self.dc.update_config({"cooldown_file": ""})
+        self.assertEqual(self.dc.cooldown_file(), builtin)
+        self.assertEqual(json.loads((self.root / "config.json").read_text(encoding="utf-8"))["cooldown_file"], "")
+
+    def test_missing_custom_cooldown_is_not_silently_replaced_by_builtin(self):
+        self.write_builtin_cooldown()
+        missing = str(self.root / "deleted-personal-video.mp4")
+        self.dc._config["cooldown_file"] = missing
+        self.dc._write_config(self.dc._config)
+        self.dc.load_config()
+        self.assertEqual(self.dc.get_config()["cooldown_file"], missing)
+        self.assertIsNone(self.dc.cooldown_file())
+        self.dc._running = True
+        self.assertFalse(self.dc.cooldown_arm())
+
+    def test_missing_empty_or_unreadable_builtin_cooldown_cannot_be_armed(self):
+        self.dc._running = True
+        for content in (None, b""):
+            with self.subTest(content=content):
+                if content is not None:
+                    self.write_builtin_cooldown(content)
+                self.assertIsNone(self.dc.cooldown_file())
+                self.assertFalse(self.dc.get_cooldown_state()["available"])
+                self.assertFalse(self.dc.cooldown_arm())
+        self.write_builtin_cooldown()
+        with mock.patch.object(self.dc.os.path, "getsize", side_effect=PermissionError("denied")):
+            self.assertIsNone(self.dc.cooldown_file())
+            self.assertFalse(self.dc.cooldown_arm())
+
+    def test_builtin_cooldown_serves_head_and_range_without_network_or_resource_writes(self):
+        payload = b"bundled relaxation video content"
+        self.write_builtin_cooldown(payload)
+        self.queue_song()
+        self.dc._running = True
+        self.assertTrue(self.dc.cooldown_arm())
+        self.assertIsNone(self.dc.cooldown_check("video.mp4"))
+        head = self.proxy()
+        head.path = "/next.mp4"
+        head.do_HEAD()
+        head.send_response.assert_called_once_with(200)
+        self.assertIn(mock.call("Content-Length", str(len(payload))), head.send_header.call_args_list)
+        self.assertEqual(head.wfile.getvalue(), b"")
+        get = self.proxy()
+        get.path = "/next.mp4"
+        get.headers = {"Range": "bytes=3-10"}
+        with mock.patch.object(self.dc, "touch") as touch:
+            get.do_GET()
+        touch.assert_not_called()
+        get.send_response.assert_called_once_with(206)
+        self.assertIn(mock.call("Content-Range", f"bytes 3-10/{len(payload)}"), get.send_header.call_args_list)
+        self.assertEqual(get.wfile.getvalue(), payload[3:11])
+        self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
+        self.assertIsNone(self.dc.cooldown_check("after.mp4"))
+        self.assertEqual(self.dc.get_cooldown_state()["phase"], "idle")
 
     def test_cooldown_reports_armed_serving_and_idle(self):
         self.queue_song()

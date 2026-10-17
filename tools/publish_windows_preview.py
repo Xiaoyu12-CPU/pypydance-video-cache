@@ -10,17 +10,25 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from zipfile import ZipFile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dance_ui.release_resources import (
+    COOLDOWN_ARCHIVE_PATH,
+    describe_cooldown, validate_cooldown_bytes,
+)
 
 
 REPOSITORY = "Xiaoyu12-CPU/pypydance-video-cache"
-TAG = "v2.0.0"
-TITLE = "PyPyDance Cache 2.0.0（Windows 正式版）"
+TAG = "v2.0.1"
+TITLE = "PyPyDance Cache 2.0.1（Windows 正式版）"
 PUBLISH_MARKER = "[publish-release]"
 REQUIRED_SMOKE_CHECKS = {
     "demo_mode", "builtin_light_theme", "pillow_generated_background",
     "embedded_svg_icons", "four_page_navigation_and_rendering",
     "openvr_library_loaded_without_initialization",
+    "bundled_cooldown_video",
 }
 
 
@@ -48,6 +56,9 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
     info = json.loads(info_path.read_text(encoding="utf-8"))
     if info["git_sha"] != expected_sha:
         raise ValueError("The artifact was not built from this workflow's exact commit.")
+    source_video = describe_cooldown()
+    if info.get("bundled_cooldown_video") != source_video:
+        raise ValueError("The release video metadata differs from the approved source video.")
     tests, smoke = info["isolated_tests"], info["frozen_demo_smoke"]
     if (tests["status"] != "passed" or tests["platform"] != "win32"
             or tests["tests_run"] < 1 or tests["passed"] != tests["tests_run"]
@@ -57,6 +68,7 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
             or smoke["platform"] != "win32" or smoke["qt_platform"] != "windows"
             or "v" + smoke["application_version"] != TAG
             or smoke.get("theme_id") != "light"
+            or smoke.get("bundled_cooldown_video") != source_video
             or not REQUIRED_SMOKE_CHECKS.issubset(smoke.get("checks", []))):
         raise ValueError("The frozen Windows executable has not passed the expected stable checks.")
     with ZipFile(archive) as zipped:
@@ -69,6 +81,10 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
         for path in ("PyPyDanceCache.exe", "_internal/python312.dll", "docs/build-info.json", "打开演示.bat"):
             if "PyPyDanceCache/" + path not in members:
                 raise ValueError("The release ZIP is incomplete: " + path)
+        if COOLDOWN_ARCHIVE_PATH not in members:
+            raise ValueError("The release ZIP is missing the bundled cooldown video.")
+        if validate_cooldown_bytes(zipped.read(COOLDOWN_ARCHIVE_PATH)) != source_video:
+            raise ValueError("The release ZIP cooldown video differs from the approved source video.")
         if json.loads(zipped.read("PyPyDanceCache/docs/build-info.json")) != info:
             raise ValueError("The bundled and attached build reports differ.")
     return info, [archive, checksum, info_path]
@@ -101,37 +117,31 @@ def tag_commit() -> str | None:
 def notes(info: dict, checksum: str) -> str:
     smoke, tests = info["frozen_demo_smoke"], info["isolated_tests"]
     run_url = f"https://github.com/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    return f"""PyPyDance Cache 2.0.0 Windows x64 正式版。用户已在 Windows 上运行 VRChat 并反馈程序能够正常工作。
+    return f"""PyPyDance Cache 2.0.1 Windows x64 正式版。
 
-## 本版功能
+## 本次更新
 
-- Qt for Python 桌面界面，提供运行、存储、设置、外观四页。
-- 测速后可将 CDN 保存至本机“常用 CDN 收藏列表”，支持选择使用与删除。
-- 设置页提供“跟随 SteamVR 启动”选项；需要先运行 SteamVR，再应用启动设置。
-- 新配置默认使用内置浅蓝主题。本包不附带“小余12主题”及其背景，减少下载体积；外观页仍支持自定义主题和图片，已有本地外观配置保留。
+- 原样内置用户提供的默认 CoolDown 放松视频，不压缩、不降低音频码率；原文件 5,073,920 字节（约 4.84 MiB），时长约 3 分 16 秒，无需另行选择文件。
+- 首次使用或 CoolDown 路径留空时使用内置视频；已有自选本地视频配置继续保留，也可在设置页切回内置视频。
+- 仍需在“运行”页手动启用 CoolDown，随后在下一次视频请求时替换播放。启动程序或应用默认视频设置不会自动开始替换。
+- Windows 包继续不附带“小余12主题”及其背景。
 
 ## 下载与启动
 
-下载下方 **PyPyDanceCache-windows-x64.zip**，完整解压后进入 `PyPyDanceCache` 文件夹，无需安装 Python。
+下载下方 **PyPyDanceCache-windows-x64.zip**，完整解压后运行 `PyPyDanceCache/PyPyDanceCache.exe`，无需安装 Python。必须保留 `_internal` 等全部文件，其中包含默认视频；不能只复制 exe。
 
-- 先双击 `打开演示.bat` 检查四页界面；演示不启动真实缓存服务。
-- 正常使用时关闭演示，再双击 `PyPyDanceCache.exe`，按 UAC 提示启动；正式入口会自动启动缓存服务。
-- 必须保留 `_internal` 等全部文件，不能只复制 exe；建议先使用账户可写的独立测试目录。
-- 更改目录、YouTube 缓存开关前先停止服务，应用后再启动。正常关闭后检查 hosts 恢复，失败时保留窗口和日志。
-
-完整步骤见包内 `docs/WINDOWS_PREVIEW.md`。程序未签名，UAC 发布者显示为未知。
+首次使用可先双击 `打开演示.bat` 检查界面；演示不启动真实缓存服务。正常入口按 UAC 提示启动并自动开启缓存服务。程序未签名，UAC 发布者显示为未知。完整步骤见包内 `docs/WINDOWS_PREVIEW.md`。
 
 ## 本次实际验证
 
 - 原生 Windows x64 构建：{info['build_platform']}。
 - Windows 完整隔离测试：**{tests['tests_run']} 项通过，失败 0、错误 0、跳过 0**。
-- 实际打包 exe 以 Windows Qt 平台启动演示并自动退出；内置浅蓝主题、四页导航渲染、SVG 图标、合成图片的 Pillow 背景渲染及 OpenVR DLL 加载检查均通过。演示检查不启动真实服务或 SteamVR。
-- Qt / PySide6 {smoke['qt_version']}，Pillow {smoke['pillow_version']}。完整环境与报告见附件及包内 `docs/build-info.json`。
+- 实际打包 exe 以 Windows Qt 平台启动演示并自动退出；内置浅蓝主题、四页导航渲染、SVG 图标、Pillow 背景渲染和 OpenVR DLL 加载检查均通过。
+- exe 演示实际读取随包 MP4，核对 ISO MP4 文件标记、文件大小和 SHA-256；打包及发布校验确认源码资源、ZIP 内视频与构建报告一致。此检查不代表已在 VRChat 中播放。
+- Qt / PySide6 {smoke['qt_version']}，Pillow {smoke['pillow_version']}。完整环境、默认视频大小与校验值见附件及包内 `docs/build-info.json`。
 - [本次 Windows 构建与测试记录]({run_url})。
 
-**用户人工反馈：**用户已在 Windows + VRChat 环境运行并验证程序能够正常工作；这是发布前开发版本的人工反馈，与上述本次构建自动测试分别记录。
-
-**仍需专项验证：**SteamVR 自动拉起与 UAC 流程、退出后 hosts 恢复、不同 CDN/YouTube 缓存场景、旧配置/曲库迁移及不同 Windows 缩放设置。用户的一般运行反馈不表示这些细项均已逐项验收。
+**待用户实机确认：**此次新增默认视频在 Windows + VRChat 中的实际播放。用户此前已反馈旧版本在 Windows + VRChat 中正常工作，该结果不替代新版视频验收。SteamVR 自动启动与 UAC、hosts 恢复及其他专项的验证范围继续见构建报告。
 
 源码提交：`{info['git_sha']}`（`main`）。
 

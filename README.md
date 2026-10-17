@@ -1,4 +1,4 @@
-# PyPyDance Cache 2.0.0
+# PyPyDance Cache 2.0.1
 
 VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原有缓存核心与命令行入口，使用 Qt for Python 重构桌面界面。
 
@@ -34,7 +34,7 @@ VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原�
 
 ## 下载正式版
 
-前往 [v2.0.0 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v2.0.0)，下载 **PyPyDanceCache-windows-x64.zip**，完整解压并运行其中的 `PyPyDanceCache.exe`，无需安装 Python。保留同目录的 `_internal` 和说明文件。
+前往 [v2.0.1 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v2.0.1)，下载 **PyPyDanceCache-windows-x64.zip**，完整解压并运行其中的 `PyPyDanceCache.exe`，无需安装 Python。保留同目录的 `_internal` 和说明文件。
 
 ### 当前界面
 
@@ -54,7 +54,7 @@ VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原�
 - **YouTube 源：**从 VRChat 日志捕获游戏已解析的直链，在首次播放时尝试后台保存；不会仅凭队列提前解析 YouTube。
 - **网络优化：**可测试 CDN 节点并设置优选 IP。测速结果可加入本机“常用 CDN 收藏列表”，支持重启保留、选择使用和删除；使用后需应用更改。扩大范围测速采用抽样。
 - **跟随 SteamVR 启动：**在“设置 → 启动”中勾选并应用；首次设置请先运行 SteamVR。每次启动仍需确认 Windows 管理员授权，SteamVR 关闭后助手继续运行。
-- **Cool Down：**选择放松视频并进入待命后，在符合条件的后续请求中替换本机画面。恢复根据后续视频请求判断，没有精确的播放结束计时。
+- **Cool Down：**随包提供默认放松视频，配置留空即可使用；已有自选视频保留，可在设置页点击“使用内置视频”并应用更改。在运行页手动启用进入待命后，在符合条件的后续请求中替换本机画面。恢复根据后续视频请求判断，没有精确的播放结束计时。
 - **曲库维护：**重建编号映射、对比远端文件大小并报告异常；大小检查不会自动修复或批量重新下载。
 
 ## 先看界面：演示模式

@@ -76,6 +76,14 @@ API 依据：[Valve OpenVR 接口定义](https://github.com/ValveSoftware/openvr
 
 `cdn-favorites.json` 与 `appearance.json` 放在同一个本机状态目录，保存去重后的公网 IPv4 地址列表，不随程序发布。测速结果按速度排序并支持收藏；收藏可再次选择使用或删除。收藏与业务设置分开原子保存，收藏操作不提交其他草稿，使用收藏只填入优选 IP，需“应用更改”后生效。历史收藏不代表当前可用性或速度。演示默认使用临时目录；传入 `--state-dir` 可验证收藏跨启动保留。
 
+### 内置 CoolDown 视频（2.0.1）
+
+`assets/default_cooldown.mp4` 使用用户提供的原文件，未重新编码或降低音频码率。文件为 H.264/AAC、640×360、196.062 秒、5,073,920 字节（约 4.84 MiB）；SHA-256 为 `453650779b315339a1c68b29a4b486d9fe0c85b49b3c8e0a5af94ff770d7b135`。
+
+源码资源按核心模块 `__file__` 的目录定位；Windows 包收集到 `_internal/assets/default_cooldown.mp4`。配置 `cooldown_file` 缺省或留空表示使用内置视频，非空则保留用户自选；自选失效时不静默替换。配置不写入安装绝对路径，资源只读，HTTP 提供内置视频时不更新其访问标记。恢复内置视频只修改设置草稿，应用后生效；仍需手动启用 CoolDown 才进入待命。
+
+打包前、冻结演示、ZIP 校验及发布均核对原片大小、MP4 标记和 SHA-256，并写入构建报告。单文件发布上限按 5 MiB（5,242,880 字节）检查；本次用户明确要求使用原片。自动化检查不代替新版内置视频在 VRChat 中的实际播放验收。
+
 ### 正式版主题与升级
 
 2.0.0 正式版只内置 `light` / `dark` 基础主题，新用户默认浅蓝布局。不分发测试版“小余12主题”的快照或原背景，因此不再把 `dance_ui/presets` 加入 Windows 构建。背景导入和自定义主题功能继续可用。
@@ -151,7 +159,7 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 
 该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、默认浅蓝主题及使用临时合成图片的 Pillow 到 Qt 背景渲染，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
 
-普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v2.0.0`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
+普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v2.0.1`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
 
 冻结演示检查会加载打包的 Windows x64 OpenVR DLL，但不初始化或注册 SteamVR；只收集本机平台的 64 位 DLL 与许可。冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
 

@@ -60,6 +60,10 @@ class UIIntegrationTests(unittest.TestCase):
         self.windows = []
         self.release_events = []
         self.background_threads = []
+        builtin = self.root / "bundle" / "assets" / "default_cooldown.mp4"
+        builtin.parent.mkdir(parents=True)
+        builtin.write_bytes(b"isolated builtin relaxation video")
+        self.patches.enter_context(patch.object(core, "DEFAULT_COOLDOWN_PATH", str(builtin)))
         self.config = copy.deepcopy(core.DEFAULT_CONFIG)
         self.config.update(
             cache_dir=str(self.root / "cache"), library_dir=str(self.root / "library"),
@@ -412,6 +416,60 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("失败", window.apply_hints["settings"].text())
         self.assertIn("IP 地址格式无效", window.banner.text())
 
+    def test_demo_default_cooldown_is_presented_and_arms_without_real_service(self):
+        window, controller, _ = self.make_window()
+        self.assertEqual(controller.config()["cooldown_file"], "")
+        self.assertEqual(window.cooldown_file_label.text(), "内置默认放松视频")
+        self.assertEqual(window.cooldown_path.text(), "")
+        self.assertIn("内置", window.cooldown_path.placeholderText())
+        self.assertEqual(window.cooldown_button.text(), "启用 CoolDown")
+        self.assertTrue(window.cooldown_button.isEnabled())
+        QTest.mouseClick(window.cooldown_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(window._cooldown["phase"], "armed")
+        QTest.mouseClick(window.cooldown_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(window._cooldown["phase"], "idle")
+        for mocked in self.core_mocks.values():
+            mocked.assert_not_called()
+
+    def test_restore_builtin_cooldown_is_a_draft_until_applied(self):
+        window, controller, _ = self.make_window()
+        custom = self.root / "my-relax.mp4"
+        custom.write_bytes(b"personal video")
+        controller.apply_config({"cooldown_file": str(custom)}, "settings")
+        self.assertEqual(window.cooldown_file_label.text(), str(custom))
+        window.navigate(2)
+        QTest.mouseClick(window.default_cooldown_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(window.cooldown_path.text(), "")
+        self.assertTrue(window._dirty["settings"])
+        self.assertEqual(controller.config()["cooldown_file"], str(custom))
+        self.assertEqual(window.cooldown_file_label.text(), str(custom))
+        QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
+        self.assertFalse(window._dirty["settings"])
+        self.assertEqual(controller.config()["cooldown_file"], "")
+        self.assertEqual(window.cooldown_file_label.text(), "内置默认放松视频")
+        self.assertEqual(window.cooldown_button.text(), "启用 CoolDown")
+
+    def test_missing_builtin_cooldown_is_reported_in_demo_instead_of_claiming_available(self):
+        Path(core.DEFAULT_COOLDOWN_PATH).unlink()
+        window, controller, _ = self.make_window()
+        self.assertFalse(window._cooldown["available"])
+        self.assertIn("内置默认放松视频不可用", window.cooldown_file_label.text())
+        self.assertIn("完整解压", window.cooldown_hint.text())
+        self.assertEqual(window.cooldown_button.text(), "选择放松视频")
+        controller.cooldown()
+        self.assertEqual(window._cooldown["phase"], "idle")
+
+    def test_missing_custom_cooldown_explains_choice_without_switching_to_builtin(self):
+        window, controller, _ = self.make_window()
+        missing = str(self.root / "missing-personal-video.mp4")
+        controller.apply_config({"cooldown_file": missing}, "settings")
+        self.assertEqual(controller.config()["cooldown_file"], missing)
+        self.assertEqual(window.cooldown_file_label.text(), missing)
+        self.assertFalse(window._cooldown["available"])
+        self.assertIn("自选放松视频", window.cooldown_hint.text())
+        controller.cooldown()
+        self.assertEqual(window._cooldown["phase"], "idle")
+
     def test_saved_cooldown_file_refreshes_the_run_action_and_arms_off_the_gui_thread(self):
         window, controller, _ = self.make_window(demo=False)
         selected = str(self.root / "new-cooldown.mp4")
@@ -717,9 +775,11 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report["theme_name"], "浅色")
         self.assertEqual(report["theme_id"], "light")
         self.assertEqual(report["checks"], [
-            "demo_mode", "builtin_light_theme", "pillow_generated_background",
+            "demo_mode", "bundled_cooldown_video", "builtin_light_theme", "pillow_generated_background",
             "embedded_svg_icons", "four_page_navigation_and_rendering",
         ])
+        self.assertEqual(report["bundled_cooldown_video"]["relative_path"], "assets/default_cooldown.mp4")
+        self.assertLessEqual(report["bundled_cooldown_video"]["size_bytes"], 5 * 1024 * 1024)
         self.assertEqual(window.stack.currentIndex(), 3)
         self.assertIsNone(window.backdrop.image)
         self.assertEqual(window.backdrop.theme, original_theme)

@@ -14,6 +14,14 @@ import subprocess
 import sys
 import zipfile
 
+# This file is also invoked directly as ``python tools/package_windows.py``.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dance_ui import __version__
+from dance_ui.release_resources import (
+    COOLDOWN_ARCHIVE_PATH, COOLDOWN_RELATIVE_PATH,
+    describe_cooldown, validate_cooldown_bytes,
+)
+
 
 def read_json(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -43,6 +51,7 @@ def main() -> int:
         "docs/WINDOWS_PREVIEW.md",
         "启动.bat",
         "打开演示.bat",
+        "_internal/" + COOLDOWN_RELATIVE_PATH,
     )
     for relative in required:
         if not (bundle / relative).is_file():
@@ -52,6 +61,9 @@ def main() -> int:
     if any("presets" in tuple(part.casefold() for part in path.relative_to(bundle).parts)
            for path in bundle.rglob("*")):
         raise SystemExit("Stable release bundles must not include bundled preset resources.")
+    video_info = describe_cooldown()
+    if describe_cooldown(bundle / "_internal" / COOLDOWN_RELATIVE_PATH) != video_info:
+        raise SystemExit("The bundled cooldown video does not match the source video.")
 
     tests = read_json(args.reports / "unit-tests.json")
     smoke = read_json(args.reports / "frozen-smoke.json")
@@ -65,11 +77,13 @@ def main() -> int:
     if (
         smoke.get("status") != "passed" or smoke.get("frozen") is not True
         or smoke.get("platform") != "win32" or smoke.get("qt_platform") != "windows"
-        or smoke.get("application_version") != "2.0.0" or smoke.get("theme_id") != "light"
+        or smoke.get("application_version") != __version__ or smoke.get("theme_id") != "light"
+        or smoke.get("bundled_cooldown_video") != video_info
         or not {
             "demo_mode", "builtin_light_theme", "pillow_generated_background",
             "embedded_svg_icons", "four_page_navigation_and_rendering",
             "openvr_library_loaded_without_initialization",
+            "bundled_cooldown_video",
         }.issubset(smoke.get("checks", []))
     ):
         raise SystemExit("A passing frozen-demo smoke report using native Windows Qt is required.")
@@ -94,6 +108,7 @@ def main() -> int:
         "dependencies": dependencies,
         "isolated_tests": tests,
         "frozen_demo_smoke": smoke,
+        "bundled_cooldown_video": video_info,
         "user_reported_validation": {
             "source": "Direct user feedback before the stable release",
             "environment": "Windows running VRChat",
@@ -106,6 +121,7 @@ def main() -> int:
             ],
         },
         "not_verified": [
+            "The newly bundled cooldown video's playback in real Windows VRChat",
             "SteamVR automatic startup and the associated UAC interaction",
             "hosts restoration after service shutdown",
             "Individual CDN/YouTube cache scenarios and existing library migration",
@@ -131,6 +147,8 @@ def main() -> int:
         for relative in required:
             if f"{bundle.name}/{relative}" not in zipped.namelist():
                 raise SystemExit(f"Archive is missing {relative}")
+        if validate_cooldown_bytes(zipped.read(COOLDOWN_ARCHIVE_PATH)) != video_info:
+            raise SystemExit("The archived cooldown video differs from the source video.")
     with archive.open("rb") as archive_file:
         digest = hashlib.file_digest(archive_file, "sha256").hexdigest()
     (args.output / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")

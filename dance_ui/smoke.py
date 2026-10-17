@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 from PIL import Image, __version__ as pillow_version
 
 from . import __version__
+from .release_resources import describe_cooldown
 from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES
 
 
@@ -43,6 +44,8 @@ def inspect_demo(window) -> dict:
         if not window.controller.demo:
             raise ValueError("Executable smoke checks require an isolated demo.")
         report["checks"].append("demo_mode")
+        report["bundled_cooldown_video"] = describe_cooldown()
+        report["checks"].append("bundled_cooldown_video")
         _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))

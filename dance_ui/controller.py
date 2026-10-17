@@ -38,7 +38,6 @@ class CoreController(QObject):
         self._demo_config.update(
             cache_dir=r"C:\PyPyDance\cache",
             library_dir=r"D:\PyPyDance\Library",
-            cooldown_file=r"D:\PyPyDance\stretch.mp4",
             cdn_permanent=True,
         )
         self._demo_running = True
@@ -286,6 +285,8 @@ class CoreController(QObject):
         if self.demo:
             if not self._demo_running:
                 return
+            if self._demo_cooldown == "idle" and not core.resolve_cooldown_file(self._demo_config.get("cooldown_file", "")):
+                return
             self._demo_cooldown = "armed" if self._demo_cooldown == "idle" else "idle"
             self._publish_demo_cooldown()
             return
@@ -300,7 +301,7 @@ class CoreController(QObject):
 
     def _publish_demo_cooldown(self):
         self.event.emit("cooldown", {"phase": self._demo_cooldown,
-                                    "available": bool(self._demo_config["cooldown_file"]),
+                                    "available": core.resolve_cooldown_file(self._demo_config.get("cooldown_file", "")) is not None,
                                     "active": self._demo_cooldown != "idle", "serving_filename": None})
 
     def open_directory(self, path: str):

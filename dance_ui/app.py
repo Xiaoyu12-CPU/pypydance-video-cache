@@ -309,7 +309,7 @@ class MainWindow(QMainWindow, Pages):
         phase = state.get("phase", "idle")
         available = state.get("available", False)
         filename = self.controller.config().get("cooldown_file", "")
-        self.cooldown_file_label.setText(filename or "未选择放松视频")
+        self.cooldown_file_label.setText(filename or ("内置默认放松视频" if available else "内置默认放松视频不可用"))
         self.cooldown_file_label.setToolTip(filename)
         if phase == "armed":
             set_status(self.cooldown_badge, "等待替换", "warning")
@@ -321,7 +321,13 @@ class MainWindow(QMainWindow, Pages):
             self.cooldown_button.setText("退出 CoolDown")
         else:
             set_status(self.cooldown_badge, "未启用")
-            self.cooldown_hint.setText("休息一下，将下一次视频请求替换为本地放松视频。" if available else "先在设置中选择一个可用的本地 MP4 放松视频。")
+            if available:
+                hint = "休息一下，将下一次视频请求替换为本地放松视频。"
+            elif filename:
+                hint = "自选放松视频不存在或不可用，请在设置中重新选择，或改用内置视频并应用更改。"
+            else:
+                hint = "内置放松视频缺失或不可用，请重新完整解压程序，或在设置中选择本地 MP4。"
+            self.cooldown_hint.setText(hint)
             self.cooldown_button.setText("启用 CoolDown" if available else "选择放松视频")
         self.cooldown_button.setEnabled((not available or self._runtime.get("running", False)) and not self.controller.busy("cooldown"))
 

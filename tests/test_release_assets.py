@@ -1,8 +1,9 @@
-"""Release safety checks using tiny local fixtures and no GitHub operations."""
+"""Release safety checks using the real video, synthetic EXEs, and no GitHub operations."""
 
 import copy
 from contextlib import redirect_stdout
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from zipfile import ZipFile
 
 from tools import package_windows as packager
 from tools import publish_windows_preview as publisher
+from dance_ui import release_resources as resources
 
 
 class OpenVRPackagingTests(unittest.TestCase):
@@ -93,9 +95,12 @@ class ReleaseAssetTests(unittest.TestCase):
         )
         self.block_process.start()
         self.addCleanup(self.block_process.stop)
+        self.cooldown_bytes = resources.bundled_cooldown_path().read_bytes()
+        self.cooldown_info = resources.describe_cooldown()
         self.info = {
             "git_sha": self.SHA,
             "build_platform": "Windows synthetic test fixture",
+            "bundled_cooldown_video": dict(self.cooldown_info),
             "isolated_tests": {
                 "status": "passed", "platform": "win32", "tests_run": 3, "passed": 3,
                 "failures": [], "errors": [], "skipped": [],
@@ -106,6 +111,7 @@ class ReleaseAssetTests(unittest.TestCase):
                 "qt_platform": "windows", "application_version": publisher.TAG.removeprefix("v"),
                 "theme_id": "light", "checks": sorted(publisher.REQUIRED_SMOKE_CHECKS),
                 "qt_version": "6.synthetic", "pillow_version": "synthetic",
+                "bundled_cooldown_video": dict(self.cooldown_info),
             },
         }
 
@@ -116,8 +122,11 @@ class ReleaseAssetTests(unittest.TestCase):
         with ZipFile(archive, "w") as zipped:
             for name in ("PyPyDanceCache.exe", "_internal/python312.dll", "打开演示.bat"):
                 zipped.writestr("PyPyDanceCache/" + name, b"tiny synthetic fixture")
-            for name, contents in (extra_files or {}).items():
-                zipped.writestr("PyPyDanceCache/" + name, contents)
+            files = {"_internal/" + resources.COOLDOWN_RELATIVE_PATH: self.cooldown_bytes}
+            files.update(extra_files or {})
+            for name, contents in files.items():
+                if contents is not None:
+                    zipped.writestr("PyPyDanceCache/" + name, contents)
             zipped.writestr("PyPyDanceCache/docs/build-info.json", text)
         (self.assets / "build-info.json").write_text(text, encoding="utf-8")
         (self.assets / (archive.name + ".sha256")).write_text(
@@ -128,7 +137,7 @@ class ReleaseAssetTests(unittest.TestCase):
     def publication_environment(self, **overrides):
         event = self.assets / "github-event.json"
         event.write_text(json.dumps({
-            "after": self.SHA, "head_commit": {"message": "Release 2.0.0 [publish-release]"},
+            "after": self.SHA, "head_commit": {"message": "Release 2.0.1 [publish-release]"},
         }), encoding="utf-8")
         environment = {
             "GITHUB_REPOSITORY": publisher.REPOSITORY, "GITHUB_SHA": self.SHA,
@@ -153,8 +162,40 @@ class ReleaseAssetTests(unittest.TestCase):
         info, files = publisher.verify_assets(self.assets, self.SHA)
         self.assertEqual(info, expected)
         self.assertEqual(len(files), 3)
-        self.assertLess(files[0].stat().st_size, 4096)
+        self.assertGreater(files[0].stat().st_size, len(self.cooldown_bytes))
         publisher.verify_uploaded(self.remote_assets(files), files)
+
+    def test_approved_resource_is_an_actual_readable_mp4_under_five_megabytes(self):
+        self.assertEqual(self.cooldown_bytes[4:8], b"ftyp")
+        self.assertGreater(len(self.cooldown_bytes), 1_000_000)
+        self.assertLessEqual(len(self.cooldown_bytes), resources.COOLDOWN_MAX_BYTES)
+        self.assertEqual(self.cooldown_info["size_bytes"], len(self.cooldown_bytes))
+        self.assertEqual(self.cooldown_info["sha256"], hashlib.sha256(self.cooldown_bytes).hexdigest())
+        self.assertEqual(resources.describe_cooldown(), self.cooldown_info)
+
+    def test_resource_validator_rejects_empty_oversized_and_substituted_mp4(self):
+        forged_mp4 = self.cooldown_bytes[:32] + b"\0" * (len(self.cooldown_bytes) - 32)
+        for contents in (b"", b"fake MP4", b"\0" * (resources.COOLDOWN_MAX_BYTES + 1), forged_mp4):
+            with self.subTest(size=len(contents)), self.assertRaises(ValueError):
+                resources.validate_cooldown_bytes(contents)
+
+    def test_rejects_missing_or_changed_video_despite_a_matching_archive_checksum(self):
+        path = "_internal/" + resources.COOLDOWN_RELATIVE_PATH
+        for contents in (None, b"", b"not an MP4", self.cooldown_bytes[:-1]):
+            with self.subTest(size=None if contents is None else len(contents)):
+                self.write_assets(extra_files={path: contents})
+                with self.assertRaisesRegex(ValueError, "cooldown video"):
+                    publisher.verify_assets(self.assets, self.SHA)
+
+    def test_rejects_video_metadata_that_does_not_match_the_source_and_smoke(self):
+        for section in (None, "frozen_demo_smoke"):
+            with self.subTest(section=section):
+                info = copy.deepcopy(self.info)
+                target = info if section is None else info[section]
+                target["bundled_cooldown_video"]["sha256"] = "0" * 64
+                self.write_assets(info)
+                with self.assertRaises(ValueError):
+                    publisher.verify_assets(self.assets, self.SHA)
 
     def test_rejects_wrong_commit_incomplete_tests_and_non_native_smoke(self):
         cases = [
@@ -289,12 +330,12 @@ class ReleaseAssetTests(unittest.TestCase):
                 patch.object(publisher, "gh") as gh, redirect_stdout(io.StringIO()):
             self.assertEqual(publisher.main(), 0)
         create, upload, publish = [call.args for call in gh.call_args_list]
-        self.assertEqual(create[:3], ("release", "create", "v2.0.0"))
+        self.assertEqual(create[:3], ("release", "create", publisher.TAG))
         self.assertIn("--draft=true", create)
         self.assertIn("--prerelease=false", create)
-        self.assertEqual(upload[:3], ("release", "upload", "v2.0.0"))
+        self.assertEqual(upload[:3], ("release", "upload", publisher.TAG))
         self.assertEqual(publish, (
-            "release", "edit", "v2.0.0", "--draft=false", "--prerelease=false", "--latest=true",
+            "release", "edit", publisher.TAG, "--draft=false", "--prerelease=false", "--latest=true",
         ))
 
     def test_does_not_publish_a_draft_if_uploaded_assets_differ(self):
@@ -349,6 +390,8 @@ class ReleaseAssetTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("synthetic package fixture", encoding="utf-8")
         (bundle / "THIRD_PARTY_LICENSES").mkdir()
+        (bundle / "_internal" / resources.COOLDOWN_RELATIVE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        (bundle / "_internal" / resources.COOLDOWN_RELATIVE_PATH).write_bytes(self.cooldown_bytes)
         reports = self.assets / "reports"
         reports.mkdir()
         for name, value in (
@@ -371,6 +414,7 @@ class ReleaseAssetTests(unittest.TestCase):
             info, _ = publisher.verify_assets(output, self.SHA)
             self.assertEqual(info["user_reported_validation"]["environment"], "Windows running VRChat")
             self.assertEqual(info["frozen_demo_smoke"], self.info["frozen_demo_smoke"])
+            self.assertEqual(info["bundled_cooldown_video"], self.cooldown_info)
             self.assertTrue(info["not_verified"])
             preset = bundle / "_internal/dance_ui/presets/xiaoyu12/background.png"
             preset.parent.mkdir(parents=True)

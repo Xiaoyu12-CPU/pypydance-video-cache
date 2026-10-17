@@ -43,6 +43,9 @@ if getattr(sys, "frozen", False):
     SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Bundled read-only resources live beside this module, including in PyInstaller
+# _internal. Keep the selected default implicit so moving an installation works.
+DEFAULT_COOLDOWN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "default_cooldown.mp4")
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 HOSTS_MARK = "# dance-cache"
 CDN_HOSTS = ["cdn.pypy.dance", "806bb815.cdn.pypy.dance"]
@@ -1637,10 +1640,12 @@ class DanceHandler(BaseHTTPRequestHandler):
         if not name:
             self.send_error(404)
             return
-        p = cooldown_check(name) or local_path_for(name)
+        replacement = cooldown_check(name)
+        p = replacement or local_path_for(name)
         if p:
             log(f"本地命中 {name} -> {os.path.basename(p)}")
-            touch(p)
+            if not replacement:
+                touch(p)
             self._serve_file(p)
         else:
             log(f"本地未命中 {name}，回源拉取")
@@ -2001,13 +2006,18 @@ _cooldown_serving = None     # 正在用放松视频服务的文件名（该文�
 _cooldown_exclude = None     # 待命时正在播放的歌曲文件名（不对它触发）
 
 
-def cooldown_file():
-    """选中的本地放松视频；文件失效时返回 None。"""
-    path = (_config.get("cooldown_file") or "").strip()
+def resolve_cooldown_file(configured_path=""):
+    """留空使用内置视频；显式选择失效时不替换成其他视频。"""
+    path = (configured_path or "").strip() or DEFAULT_COOLDOWN_PATH
     try:
         return path if path and os.path.isfile(path) and os.path.getsize(path) > 0 else None
     except OSError:
         return None
+
+
+def cooldown_file():
+    """返回当前可用的放松视频；不把安装目录写入用户配置。"""
+    return resolve_cooldown_file(_config.get("cooldown_file", ""))
 
 
 def cooldown_available():

@@ -14,6 +14,7 @@ a = Analysis(
     datas=[
         (str(project_root / 'README.md'), '.'),
         (str(project_root / 'LICENSE'), '.'),
+        (str(project_root / 'assets' / 'default_cooldown.mp4'), 'assets'),
     ],
     hiddenimports=[],
     hookspath=[str(project_root / 'tools' / 'pyinstaller_hooks')],
