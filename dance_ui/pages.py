@@ -159,6 +159,18 @@ class Pages:
         self.use_ip_button = button("使用选中的 IP", self.use_selected_ip)
         self.use_ip_button.hide()
         network.box.addWidget(self.use_ip_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.favorite_ip_button = button("收藏选中的 IP", self.favorite_selected_ip)
+        self.favorite_ip_button.hide()
+        network.box.addWidget(self.favorite_ip_button, 0, Qt.AlignmentFlag.AlignLeft)
+        network.box.addWidget(label("常用 CDN 收藏列表", subheading=True))
+        self.favorites_hint = label("", muted=True, wrap=True)
+        network.box.addWidget(self.favorites_hint)
+        self.favorites_table = table(["收藏的 IP 地址"], 0)
+        network.box.addWidget(self.favorites_table)
+        favorite_actions, _ = row(button("使用选中的收藏", self.use_favorite_ip),
+                                  button("删除选中的收藏", self.remove_favorite_ip), stretch=True)
+        network.box.addWidget(favorite_actions)
+
         box.addWidget(network)
         box.addStretch()
         return self.with_apply_footer(area, "settings")

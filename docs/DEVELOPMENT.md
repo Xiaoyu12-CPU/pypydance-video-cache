@@ -34,7 +34,7 @@ py -3.12 -m venv .venv
 | `dance_cache_gui.py` | 正常模式，自动启动真实服务 | Windows 日常使用 |
 | `dance_cache.py` | 原有标准库命令行入口 | CLI 兼容 |
 
-`--state-dir` **只覆盖外观目录**，不能沙箱化真实服务或重定向业务配置。隔离检查使用 `--demo` 或测试替身，不把 `--no-autostart` 当作演示模式。
+`--state-dir` **只覆盖界面本机状态目录（外观与 CDN 收藏）**，不能沙箱化真实服务或重定向业务配置。隔离检查使用 `--demo` 或测试替身，不把 `--no-autostart` 当作演示模式。
 
 ## 配置与资源位置
 
@@ -59,6 +59,10 @@ QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation) / appearanc
 主题存储包含 `appearance.json` 与 `backgrounds/`。个人导入背景复制到此目录，原图不修改；随附背景从程序资源加载，所有副本均缺失时回退主题底色。可编辑主题不能写入 PyInstaller 的 `_internal` 或解包资源目录。
 
 `--demo` 未指定状态目录时，使用临时目录并在正常退出后清理。需要复查保存结果时传入专用目录，例如 `.demo-state`，避免与真实用户数据共用。
+
+### 常用 CDN 收藏
+
+`cdn-favorites.json` 与 `appearance.json` 放在同一个本机状态目录，保存去重后的公网 IPv4 地址列表，不随程序发布。测速结果按速度排序并支持收藏；收藏可再次选择使用或删除。收藏与业务设置分开原子保存，收藏操作不提交其他草稿，使用收藏只填入优选 IP，需“应用更改”后生效。历史收藏不代表当前可用性或速度。演示默认使用临时目录；传入 `--state-dir` 可验证收藏跨启动保留。
 
 ### 随附的小余12主题
 

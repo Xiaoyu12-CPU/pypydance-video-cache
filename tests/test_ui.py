@@ -449,6 +449,28 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertNotIn("维护完成", window.maintenance_status.text())
         self.assertIsNone(window._maintenance)
 
+    def test_cdn_results_favorites_persist_without_applying_settings(self):
+        from dance_ui.cdn_favorites import CDNFavorites
+        window, controller, store = self.make_window()
+        original = controller.config()["preferred_cdn_ip"]
+        window.preferred_ip.setText("9.9.9.9")
+        window.finish_scan([{"ip": "1.1.1.1", "mbps": 2.5, "error": None},
+                            {"ip": "8.8.8.8", "mbps": 0, "error": "timeout"}])
+        self.assertFalse(window.scan_table.isHidden())
+        window.favorite_selected_ip()
+        window.favorite_selected_ip()
+        self.assertEqual(CDNFavorites(store.root_dir).items, ["1.1.1.1"])
+        self.assertEqual(window.preferred_ip.text(), "9.9.9.9")
+        self.assertEqual(controller.config()["preferred_cdn_ip"], original)
+        window.use_favorite_ip()
+        self.assertEqual(window.preferred_ip.text(), "1.1.1.1")
+        self.assertEqual(controller.config()["preferred_cdn_ip"], original)
+        window.scan_table.selectRow(1)
+        window.favorite_selected_ip()
+        self.assertEqual(window.cdn_favorites.items, ["1.1.1.1"])
+        window.remove_favorite_ip()
+        self.assertEqual(CDNFavorites(store.root_dir).items, [])
+
     def test_demo_from_construction_to_close_never_calls_core_services_or_files(self):
         window, controller, _ = self.make_window()
         QTest.mouseClick(window.service_button, Qt.MouseButton.LeftButton)

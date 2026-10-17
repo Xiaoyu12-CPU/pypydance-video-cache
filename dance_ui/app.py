@@ -38,6 +38,8 @@ class MainWindow(QMainWindow, Pages):
     def __init__(self, controller: CoreController, store: ThemeStore):
         super().__init__()
         self.controller, self.store = controller, store
+        from .cdn_favorites import CDNFavorites
+        self.cdn_favorites = CDNFavorites(store.root_dir)
         self._syncing = False
         self._dirty = {"storage": False, "settings": False}
         self.apply_buttons, self.apply_hints = {}, {}
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.build_run_page())
         self.stack.addWidget(self.build_storage_page())
         self.stack.addWidget(self.build_settings_page())
+        self.render_favorites()
         self.appearance_page = AppearancePage(store)
         self.stack.addWidget(self.appearance_page)
         outer.addWidget(self.stack, 1)
@@ -165,7 +168,7 @@ class MainWindow(QMainWindow, Pages):
         self.setStyleSheet(stylesheet(theme, preferences))
         scale = preferences.get("scale", 100) / 100
         self._row_height = round({"comfortable": 52, "standard": 44, "compact": 36}[preferences["density"]] * scale)
-        for widget in (self.queue_table, self.download_table, self.scan_table):
+        for widget in (self.queue_table, self.download_table, self.scan_table, self.favorites_table):
             widget.verticalHeader().setDefaultSectionSize(self._row_height)
         self.download_table.verticalHeader().setDefaultSectionSize(self._row_height + round(8 * scale))
         self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
@@ -323,7 +326,7 @@ class MainWindow(QMainWindow, Pages):
         lib_count, lib_mb = data.get("lib_count", 0), data.get("lib_mb", 0)
         self.library_summary.setText(f"{lib_count} 个视频  ·  {bytes_text(lib_mb * 1024**2)}" if self.controller.config().get("library_dir") else "尚未设置曲库目录")
     def resize_tables(self):
-        for widget, limit in ((self.queue_table, 4), (self.download_table, 3), (self.scan_table, 4)):
+        for widget, limit in ((self.queue_table, 4), (self.download_table, 3), (self.scan_table, 4), (self.favorites_table, 6)):
             rows = min(limit, widget.rowCount())
             widget.setFixedHeight(rows * widget.verticalHeader().defaultSectionSize() + widget.horizontalHeader().sizeHint().height() + 4)
             widget.setVisible(widget.rowCount() > 0)
@@ -441,6 +444,7 @@ class MainWindow(QMainWindow, Pages):
         self.quick_scan_button.setEnabled(False)
         self.full_scan_button.setEnabled(False)
         self.use_ip_button.hide()
+        self.favorite_ip_button.hide()
         self._scan_results = []
         self.scan_table.setRowCount(0)
         self.scan_table.hide()
@@ -461,9 +465,56 @@ class MainWindow(QMainWindow, Pages):
             self.scan_table.setItem(index, 2, self.cell("可用" if item in valid else "未连通", item.get("error", "")))
         self.scan_status.setText(f"测速完成 · {len(valid)} 个可用地址。选择地址后，点击“使用选中的 IP”，再应用更改。" if valid else "没有测得可用地址。请检查网络，或保留自动选择。")
         self.use_ip_button.setVisible(bool(valid))
+        self.favorite_ip_button.setVisible(bool(valid))
         self.resize_tables()
         if valid:
             self.scan_table.selectRow(0)
+
+    def render_favorites(self):
+        self.favorites_table.setRowCount(len(self.cdn_favorites.items))
+        for index, ip in enumerate(self.cdn_favorites.items):
+            self.favorites_table.setItem(index, 0, self.cell(ip))
+        self.favorites_hint.setText(self.cdn_favorites.warning or (
+            "收藏保存在本机，重启后保留；历史收藏不代表当前速度，建议定期测速。" if self.cdn_favorites.items
+            else "暂无收藏。测速完成后选中地址，点击“收藏选中的 IP”。"))
+        self.resize_tables()
+        if self.cdn_favorites.items:
+            self.favorites_table.selectRow(0)
+
+    def favorite_selected_ip(self):
+        index = self.scan_table.currentRow()
+        if index < 0 or index >= len(self._scan_results):
+            self.notify("请先选择一个测速结果。")
+            return
+        item = self._scan_results[index]
+        if item.get("error") or (item.get("mbps") or 0) <= 0:
+            self.notify("请选择测速成功的地址。")
+            return
+        self.save_favorites([*self.cdn_favorites.items, item["ip"]])
+
+    def save_favorites(self, items):
+        try:
+            self.cdn_favorites.save(items)
+        except (ValueError, OSError) as exc:
+            self.notify(f"CDN 收藏保存失败：{exc}")
+            return
+        self.render_favorites()
+        self.notify("CDN 收藏已保存到本机。")
+
+    def use_favorite_ip(self):
+        index = self.favorites_table.currentRow()
+        if 0 <= index < len(self.cdn_favorites.items):
+            self.preferred_ip.setText(self.cdn_favorites.items[index])
+            self.notify("已填入收藏 IP，应用更改后生效。")
+        else:
+            self.notify("请先选择一个收藏地址。")
+
+    def remove_favorite_ip(self):
+        index = self.favorites_table.currentRow()
+        if 0 <= index < len(self.cdn_favorites.items):
+            self.save_favorites([ip for i, ip in enumerate(self.cdn_favorites.items) if i != index])
+        else:
+            self.notify("请先选择一个收藏地址。")
 
     def use_selected_ip(self):
         index = self.scan_table.currentRow()
