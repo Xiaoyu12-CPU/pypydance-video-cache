@@ -47,10 +47,23 @@ class DanceCacheApp:
 
         style = ttk.Style()
         style.configure("Big.TButton", font=("", 12, "bold"), padding=(18, 8))
-        self.toggle_btn = ttk.Button(top, text="停止服务", command=self.toggle_service, style="Big.TButton")
-        self.toggle_btn.pack(side=tk.RIGHT)
-        self.cooldown_btn = ttk.Button(top, text="Cool Down", command=self.cooldown_toggle)
-        self.cooldown_btn.pack(side=tk.RIGHT, padx=(0, 8), ipady=4)
+        style.configure("CD.TButton", font=("", 10, "bold"), foreground="#003399")
+
+        right = ttk.Frame(top)
+        right.pack(side=tk.RIGHT)
+        self.toggle_btn = ttk.Button(right, text="停止服务", command=self.toggle_service, style="Big.TButton")
+        self.toggle_btn.pack()
+        cd_row = ttk.Frame(right)
+        cd_row.pack(pady=(4, 0))
+        help_lbl = ttk.Label(cd_row, text="这是什么？", foreground="gray", font=("", 8))
+        help_lbl.pack(side=tk.LEFT, padx=(0, 4))
+        self._attach_tooltip(help_lbl,
+                             "跳累了？点 Cool Down 进入待命，切到下一首歌时，\n"
+                             "你本地会自动播放自己选的放松视频（只影响你自己的画面，\n"
+                             "放完自动恢复，只生效一次）。\n"
+                             "放松视频在下方 高级设置 →【选择cool down视频】里设置。")
+        self.cooldown_btn = ttk.Button(cd_row, text="Cool Down", command=self.cooldown_toggle, style="CD.TButton")
+        self.cooldown_btn.pack(side=tk.LEFT)
         self.state_label = ttk.Label(top, text="● 已停止", foreground="gray", font=("", 12, "bold"))
         self.state_label.pack(side=tk.RIGHT, padx=12)
 
@@ -128,7 +141,7 @@ class DanceCacheApp:
                   foreground="gray").pack(side=tk.LEFT, padx=(2, 12))
         self.verify_btn = ttk.Button(adv, text="校验曲库完整性", command=self.verify_library)
         self.verify_btn.pack(side=tk.LEFT)
-        ttk.Button(adv, text="放松视频…", command=self.pick_cooldown_file).pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Button(adv, text="选择cool down视频…", command=self.pick_cooldown_file).pack(side=tk.LEFT, padx=(12, 4))
         _cd = dc._config.get("cooldown_file") or ""
         self.cdfile_label = ttk.Label(adv, text=os.path.basename(_cd) if _cd else "未设置", foreground="gray")
         self.cdfile_label.pack(side=tk.LEFT)
@@ -307,7 +320,7 @@ class DanceCacheApp:
             self.cooldown_btn.config(text="Cool Down")
             return
         if not dc.cooldown_available():
-            messagebox.showwarning("Cool Down", "还没有设置放松视频，请先在高级设置里点【放松视频…】选择")
+            messagebox.showwarning("Cool Down", "还没有设置放松视频，请先在高级设置里点【选择cool down视频…】")
             return
         if not dc.is_running():
             messagebox.showwarning("Cool Down", "请先启动服务")
@@ -317,7 +330,7 @@ class DanceCacheApp:
 
     def pick_cooldown_file(self):
         src = filedialog.askopenfilename(
-            title="选择放松视频（Cool Down 时播放）",
+            title="选择 Cool Down 放松视频",
             filetypes=[("视频文件", "*.mp4"), ("所有文件", "*.*")])
         if not src:
             return
@@ -343,6 +356,29 @@ class DanceCacheApp:
             messagebox.showwarning("本地视频库", "尚未设置曲库目录，请先在设置里填写路径并保存")
             return
         os.startfile(dc._config["library_dir"])
+
+    def _attach_tooltip(self, widget, text):
+        """鼠标悬停显示气泡说明"""
+        tip = None
+
+        def show(e):
+            nonlocal tip
+            if tip:
+                return
+            tip = tk.Toplevel(widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{e.x_root + 12}+{e.y_root + 16}")
+            ttk.Label(tip, text=text, background="#ffffe0", relief=tk.SOLID,
+                      borderwidth=1, padding=6, justify=tk.LEFT).pack()
+
+        def hide(e):
+            nonlocal tip
+            if tip:
+                tip.destroy()
+                tip = None
+
+        widget.bind("<Enter>", show)
+        widget.bind("<Leave>", hide)
 
     def _perm_toggled(self):
         """勾选永久保存但没填曲库目录时立即提醒"""
