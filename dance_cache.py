@@ -521,6 +521,20 @@ def gather_candidate_ips(host, rounds=2):
 
 # ---------------- hosts 管理 ----------------
 
+def _hosts_error_reason(e):
+    """根据身份和错误码给出 hosts 写入失败的具体原因"""
+    try:
+        admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        admin = False
+    if not admin:
+        return "没有管理员权限，请以管理员身份运行"
+    if getattr(e, "winerror", None) == 32:
+        return "hosts 文件正被其他程序占用，请关闭加速器/安全软件后重试"
+    return ("hosts 文件被锁定或设为只读（常见于雷神等加速器的防护），"
+            "请关闭加速器的 hosts 防护，或先启动本软件再开加速器")
+
+
 def clean_stale_hosts():
     try:
         with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
@@ -532,9 +546,8 @@ def clean_stale_hosts():
             log("已清理上次残留的 hosts 记录")
     except FileNotFoundError:
         pass
-    except PermissionError:
-        log("错误: 无法写入 hosts 文件。若已用管理员身份运行，可能是加速器(如雷神)锁住了 hosts，"
-            "请关闭加速器的 hosts 防护，或先启动本软件再开加速器")
+    except PermissionError as e:
+        log(f"错误: hosts 修改失败（{_hosts_error_reason(e)}）")
         raise
 
 
@@ -1883,7 +1896,7 @@ def start_services():
             yt_mode = False
     try:
         hijack_hosts(yt_mode)
-    except PermissionError:
+    except PermissionError as e:
         _server.server_close()
         _server = None
         if _tunnel_sock:
@@ -1892,8 +1905,7 @@ def start_services():
             except Exception:
                 pass
             _tunnel_sock = None
-        return ("无法写入 hosts 文件。\n\n如果已经是管理员身份运行，很可能是加速器（如雷神）锁住了 hosts 文件。\n"
-                "解决办法：关闭加速器的 hosts 防护/锁定功能；或先启动本软件，再开加速器。")
+        return f"hosts 修改失败（{_hosts_error_reason(e)}）"
     threading.Thread(target=_server.serve_forever, daemon=True).start()
     if _tunnel_sock:
         threading.Thread(target=_tunnel_loop,
