@@ -710,7 +710,10 @@ def main(argv=None):
     parser.add_argument("--demo", action="store_true", help="使用隔离的演示数据，不启动服务或修改缓存")
     parser.add_argument("--no-autostart", action="store_true", help="启动界面但不自动启动缓存服务")
     parser.add_argument("--state-dir", type=Path, help="指定外观数据目录；不会改变缓存配置路径")
+    parser.add_argument("--smoke-test-report", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.smoke_test_report is not None and not args.demo:
+        parser.error("--smoke-test-report 必须与 --demo 一起使用。")
     if os.name == "nt" and not args.demo and not args.no_autostart:
         import dance_cache
         dance_cache.ensure_admin()
@@ -733,12 +736,30 @@ def main(argv=None):
         for warning in store.warnings:
             window.notify(warning, error=True)
         QTimer.singleShot(0, controller.publish_initial)
+        if args.smoke_test_report is not None:
+            from .smoke import inspect_demo, save_report
+
+            def smoke_check():
+                code = save_report(args.smoke_test_report, inspect_demo(window))
+                window._can_close = True
+                window.close()
+                app.exit(code)
+
+            QTimer.singleShot(250, smoke_check)
         if not args.demo and not args.no_autostart and os.name == "nt":
             QTimer.singleShot(200, controller.start)
         elif not args.demo and os.name != "nt":
             window.notify("缓存服务仅支持 Windows；当前环境可查看界面。使用 --demo 可以安全预览示例数据。", persistent=True)
         return app.exec()
     except (OSError, ValueError) as exc:
+        if args.smoke_test_report is not None:
+            from .smoke import save_report
+            save_report(args.smoke_test_report, {
+                "status": "failed", "frozen": bool(getattr(sys, "frozen", False)),
+                "platform": sys.platform, "qt_platform": app.platformName(),
+                "error": str(exc),
+            })
+            return 1
         QMessageBox.critical(None, "无法初始化 PyPyDance 助手", "请检查配置文件及目录的读写权限。\n\n" + str(exc))
         return 1
     finally:

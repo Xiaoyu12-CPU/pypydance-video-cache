@@ -129,6 +129,18 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 
 构建完成后，需要真实启动产物，确认 Qt 平台插件、中文文字、文件对话框、图片解码及关闭流程。构建成功不代表真实缓存服务已经验收。
 
+### Windows 预发行构建与冻结程序检查
+
+`.github/workflows/windows-preview.yml` 在 `ui-redesign` 推送后使用原生 Windows x64 / Python 3.12 构建，无须改动 `main`。完整隔离测试必须零失败、零错误、零跳过，随后运行打包后的 exe：
+
+```powershell
+.\dist\PyPyDanceCache\PyPyDanceCache.exe --demo --state-dir TEMP_PATH --smoke-test-report REPORT_PATH
+```
+
+该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、Pillow 到 Qt 的背景渲染及“小余12主题”快照，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`；云端产物不自动发布，发布动作另行显式执行。
+
+冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
+
 ## 验证范围
 
 项目测试使用：

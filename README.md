@@ -135,6 +135,8 @@ python dance_cache.py
 
 ## 自行构建 Windows 版
 
+测试版的自动构建由开发分支的 GitHub Actions 执行：先运行完整隔离测试，再构建并打开冻结 exe 的演示模式，检查四页、SVG 控件图标、Pillow 背景解码与随附主题。通过后提供完整目录 ZIP、SHA-256 和实际构建报告。人工发布的预发行版仍需按 [Windows 试用说明](docs/WINDOWS_PREVIEW.md) 验证真实 VRChat 行为。
+
 在 Windows 原生 Python 环境执行：
 
 ```powershell

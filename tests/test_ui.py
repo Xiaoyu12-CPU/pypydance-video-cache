@@ -6,11 +6,12 @@ user's cache configuration, or start the real cache service.
 """
 
 import copy
+import io
 import os
 import tempfile
 import threading
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -461,6 +462,56 @@ class UIIntegrationTests(unittest.TestCase):
         window.close()
         self.wait_until(lambda: not window.isVisible(), "Demo window did not finish its deferred close")
         self.assertTrue(window._can_close)
+        for name, mocked in self.core_mocks.items():
+            with self.subTest(core_operation=name):
+                mocked.assert_not_called()
+
+    def test_demo_smoke_report_checks_four_pages_svg_and_rendered_shipped_background(self):
+        from dance_ui.smoke import inspect_demo
+
+        window, _, _ = self.make_window()
+        report = inspect_demo(window)
+        self.assertEqual(report["status"], "passed", report.get("error"))
+        self.assertFalse(report["frozen"])
+        self.assertFalse(report["real_service_tested"])
+        self.assertFalse(report["vrchat_tested"])
+        self.assertEqual(report["theme_name"], "小余12主题")
+        self.assertEqual(report["checks"], [
+            "demo_mode", "shipped_theme_and_pillow_background",
+            "embedded_svg_icons", "four_page_navigation_and_rendering",
+        ])
+        self.assertEqual(window.stack.currentIndex(), 3)
+        self.assertIsNotNone(window.backdrop.image)
+        self.assertIsNotNone(window.backdrop._render)
+        self.assertFalse(window.backdrop._render.isNull())
+        for name, mocked in self.core_mocks.items():
+            with self.subTest(core_operation=name):
+                mocked.assert_not_called()
+
+    def test_demo_smoke_report_fails_when_shipped_background_cannot_be_decoded(self):
+        from dance_ui.smoke import inspect_demo
+
+        window, _, _ = self.make_window()
+        window.backdrop.image = None
+        report = inspect_demo(window)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("Pillow could not decode the shipped background", report["error"])
+        self.assertNotIn("shipped_theme_and_pillow_background", report["checks"])
+        for name, mocked in self.core_mocks.items():
+            with self.subTest(core_operation=name):
+                mocked.assert_not_called()
+
+    def test_smoke_report_argument_requires_demo_before_initializing_the_core(self):
+        from dance_ui.app import main
+
+        report_path = self.root / "should-not-exist.json"
+        error_output = io.StringIO()
+        with redirect_stderr(error_output), self.assertRaises(SystemExit) as raised:
+            main(["--smoke-test-report", str(report_path)])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--smoke-test-report 必须与 --demo 一起使用", error_output.getvalue())
+        self.assertFalse(report_path.exists())
+        self.assertEqual(self.windows, [])
         for name, mocked in self.core_mocks.items():
             with self.subTest(core_operation=name):
                 mocked.assert_not_called()

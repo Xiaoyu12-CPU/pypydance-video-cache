@@ -10,6 +10,8 @@ htmlcov/
 # Generated Windows bundles (the existing tracked spec remains versioned)
 build/
 dist/
+release/
+build-reports/
 *.spec
 !VRChat PyPyDance助手.spec
 *.exe
