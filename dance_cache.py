@@ -63,6 +63,7 @@ DEFAULT_CONFIG = {
     "enable_youtube_cache": True,
     "youtube_permanent": False,
     "cdn_permanent": False,
+    "cooldown_file": "",
 }
 
 _config = {}
@@ -1707,14 +1708,21 @@ def submit_preload(items):
 
 # ---------------- Cool Down（切歌时把下一首替换为放松视频，一次性） ----------------
 
-COOLDOWN_PATH = os.path.join(SCRIPT_DIR, "cooldown.mp4")
 _cooldown_armed = False      # 待命状态
 _cooldown_serving = None     # 正在用放松视频服务的文件名（该文件的后续 Range 请求都用放松视频）
 _cooldown_exclude = None     # 待命时正在播放的歌曲文件名（不对它触发）
 
 
+def cooldown_file():
+    """用户在软件里选好的放松视频路径（失效返回 None）"""
+    f = (_config.get("cooldown_file") or "").strip()
+    if f and os.path.exists(f) and os.path.getsize(f) > 0:
+        return f
+    return None
+
+
 def cooldown_available():
-    return os.path.exists(COOLDOWN_PATH) and os.path.getsize(COOLDOWN_PATH) > 0
+    return cooldown_file() is not None
 
 
 def _current_song_filename():
@@ -1765,20 +1773,21 @@ def cooldown_check(filename):
     global _cooldown_armed, _cooldown_serving
     if _cooldown_serving is not None:
         if filename == _cooldown_serving:
-            return COOLDOWN_PATH
+            return cooldown_file()
         _cooldown_serving = None  # 切到别的歌了，恢复正常
     if _cooldown_armed and filename != _cooldown_exclude:
-        if not cooldown_available():
-            log("Cool Down 触发但 cooldown.mp4 不可用，已自动取消")
+        cd = cooldown_file()
+        if not cd:
+            log("Cool Down 触发但放松视频不可用，已自动取消（请在高级设置里重新选择）")
             cooldown_disarm(silent=True)
             emit("cooldown", active=False)
             return None
         _cooldown_armed = False
         _cooldown_serving = filename
-        log(f"Cool Down 触发：{filename} -> 放松视频 cooldown.mp4")
+        log(f"Cool Down 触发：{filename} -> 放松视频 {os.path.basename(cd)}")
         emit("cooldown", active=False)
         refresh_queue_state()
-        return COOLDOWN_PATH
+        return cd
     return None
 
 

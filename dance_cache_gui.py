@@ -5,7 +5,6 @@
 import os
 import queue
 import re
-import shutil
 import sys
 import threading
 import time
@@ -129,6 +128,10 @@ class DanceCacheApp:
                   foreground="gray").pack(side=tk.LEFT, padx=(2, 12))
         self.verify_btn = ttk.Button(adv, text="校验曲库完整性", command=self.verify_library)
         self.verify_btn.pack(side=tk.LEFT)
+        ttk.Button(adv, text="放松视频…", command=self.pick_cooldown_file).pack(side=tk.LEFT, padx=(12, 4))
+        _cd = dc._config.get("cooldown_file") or ""
+        self.cdfile_label = ttk.Label(adv, text=os.path.basename(_cd) if _cd else "未设置", foreground="gray")
+        self.cdfile_label.pack(side=tk.LEFT)
 
         qf = ttk.LabelFrame(self.root, text="当前队列", padding=4)
         qf.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
@@ -298,28 +301,30 @@ class DanceCacheApp:
         threading.Thread(target=run, daemon=True).start()
 
     def cooldown_toggle(self):
-        """Cool Down：待命后切到下一首歌时播放放松视频（cooldown.mp4），一次性"""
+        """Cool Down：待命后切到下一首歌时播放放松视频（高级设置里选择），一次性"""
         if dc.cooldown_active():
             dc.cooldown_disarm()
             self.cooldown_btn.config(text="Cool Down")
             return
         if not dc.cooldown_available():
-            src = filedialog.askopenfilename(
-                title="选择放松视频（将复制为 exe 旁的 cooldown.mp4，以后直接点 Cool Down 即可）",
-                filetypes=[("视频文件", "*.mp4"), ("所有文件", "*.*")])
-            if not src:
-                return
-            try:
-                shutil.copy2(src, dc.COOLDOWN_PATH)
-            except Exception as e:
-                messagebox.showerror("Cool Down", f"复制失败: {e}")
-                return
-            self._append_log(f"放松视频已设置: {os.path.basename(src)} -> cooldown.mp4")
+            messagebox.showwarning("Cool Down", "还没有设置放松视频，请先在高级设置里点【放松视频…】选择")
+            return
         if not dc.is_running():
             messagebox.showwarning("Cool Down", "请先启动服务")
             return
         if dc.cooldown_arm():
             self.cooldown_btn.config(text="Cool Down（待命中，点击取消）")
+
+    def pick_cooldown_file(self):
+        src = filedialog.askopenfilename(
+            title="选择放松视频（Cool Down 时播放）",
+            filetypes=[("视频文件", "*.mp4"), ("所有文件", "*.*")])
+        if not src:
+            return
+        dc._config["cooldown_file"] = src
+        dc.save_config()
+        self.cdfile_label.config(text=os.path.basename(src))
+        self._append_log(f"放松视频已设置: {src}")
 
     def toggle_service(self):
         if dc.is_running():
