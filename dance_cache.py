@@ -550,6 +550,31 @@ def restore_hosts():
         pass
 
 
+def _hosts_watchdog_loop(include_api):
+    """运行期间定期检查 hosts 劫持条目，被外部清除（如加速器恢复备份）时自动重写"""
+    expected = CDN_HOSTS + ([API_HOST] if include_api else [])
+    while not _stop_event.wait(15):
+        try:
+            with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            marked = [l for l in lines if HOSTS_MARK in l]
+            missing = [h for h in expected if not any(h in l for l in marked)]
+            if not missing:
+                continue
+            kept = [l for l in lines if HOSTS_MARK not in l]
+            if kept and not kept[-1].endswith("\n"):
+                kept[-1] += "\n"
+            for h in expected:
+                kept.append(f"127.0.0.1 {h} {HOSTS_MARK}\n")
+            with open(HOSTS_PATH, "w", encoding="utf-8") as f:
+                f.writelines(kept)
+            log(f"检测到 hosts 条目被清除（可能是加速器恢复备份），已自动重新写入: {', '.join(missing)}")
+        except PermissionError as e:
+            log(f"hosts 自动重写失败（{_hosts_error_reason(e)}）")
+        except Exception as e:
+            log(f"hosts 看门狗异常: {e}")
+
+
 # ---------------- 源站请求（绕过劫持，用真实 IP + Host 头） ----------------
 
 def _parse_retry_after(value, default):
@@ -1908,6 +1933,7 @@ def start_services():
             _tunnel_sock = None
         return f"hosts 修改失败（{_hosts_error_reason(e)}）"
     threading.Thread(target=_server.serve_forever, daemon=True).start()
+    threading.Thread(target=_hosts_watchdog_loop, args=(yt_mode,), daemon=True).start()
     if _tunnel_sock:
         threading.Thread(target=_tunnel_loop,
                          args=(_tunnel_sock, list(_origin_ips[API_HOST])), daemon=True).start()
