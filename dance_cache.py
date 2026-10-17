@@ -1344,7 +1344,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         if not name:
             self.send_error(404)
             return
-        p = local_path_for(name)
+        p = cooldown_check(name) or local_path_for(name)
         if p:
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
@@ -1361,7 +1361,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         if not name:
             self.send_error(404)
             return
-        p = local_path_for(name)
+        p = cooldown_check(name) or local_path_for(name)
         if p:
             log(f"本地命中 {name} -> {os.path.basename(p)}")
             touch(p)
@@ -1661,7 +1661,11 @@ def describe_queue(items):
         sn = it.get("songNum", 0)
         entry = {"name": it.get("videoName", "?"), "player": it.get("playerName", "")}
         if isinstance(sn, int) and sn > 0:
-            if in_library(sn) or yt_local_path(sn):
+            kind0, payload0 = song_route(sn)
+            fname = payload0 if kind0 == "cdn" else (f"yt_{sn}.mp4" if kind0 == "yt" else None)
+            if fname is not None and fname == _cooldown_serving:
+                entry["state"] = "Cool Down"
+            elif in_library(sn) or yt_local_path(sn):
                 entry["state"] = "已缓存"
             else:
                 kind, payload = song_route(sn)
@@ -1699,6 +1703,83 @@ def submit_preload(items):
             kind, payload = song_route(sn)
         if kind == "cdn" and not is_cached(payload):
             start_background_download(payload, sn)
+
+
+# ---------------- Cool Down（切歌时把下一首替换为放松视频，一次性） ----------------
+
+COOLDOWN_PATH = os.path.join(SCRIPT_DIR, "cooldown.mp4")
+_cooldown_armed = False      # 待命状态
+_cooldown_serving = None     # 正在用放松视频服务的文件名（该文件的后续 Range 请求都用放松视频）
+_cooldown_exclude = None     # 待命时正在播放的歌曲文件名（不对它触发）
+
+
+def cooldown_available():
+    return os.path.exists(COOLDOWN_PATH) and os.path.getsize(COOLDOWN_PATH) > 0
+
+
+def _current_song_filename():
+    """当前正在播放的歌曲对应的请求文件名（cdn 文件名或 yt_{id}.mp4）"""
+    items = _last_queue_items
+    if not items:
+        return None
+    sn = items[0].get("songNum", 0)
+    if not (isinstance(sn, int) and sn > 0):
+        return None
+    kind, payload = song_route(sn)
+    if kind == "cdn":
+        return payload
+    if kind == "yt":
+        return f"yt_{sn}.mp4"
+    return None
+
+
+def cooldown_arm():
+    """进入待命：下一个非当前歌曲的视频请求将被替换为放松视频。成功返回 True"""
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    if not cooldown_available():
+        return False
+    _cooldown_exclude = _current_song_filename()
+    _cooldown_armed = True
+    _cooldown_serving = None
+    log("Cool Down 已待命：切到下一首歌时播放放松视频（再点一次按钮可取消）")
+    return True
+
+
+def cooldown_disarm(silent=False):
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    _cooldown_armed = False
+    _cooldown_serving = None
+    _cooldown_exclude = None
+    if not silent:
+        log("Cool Down 已取消")
+
+
+def cooldown_active():
+    return _cooldown_armed or _cooldown_serving is not None
+
+
+def cooldown_check(filename):
+    """视频请求拦截点：该请求应改用放松视频时返回其路径，否则 None。
+    待命时第一个"非当前歌曲"的请求触发；触发后同一文件名的后续请求（含 Range）持续用放松视频，
+    直到出现别的文件名（切歌）自动恢复"""
+    global _cooldown_armed, _cooldown_serving
+    if _cooldown_serving is not None:
+        if filename == _cooldown_serving:
+            return COOLDOWN_PATH
+        _cooldown_serving = None  # 切到别的歌了，恢复正常
+    if _cooldown_armed and filename != _cooldown_exclude:
+        if not cooldown_available():
+            log("Cool Down 触发但 cooldown.mp4 不可用，已自动取消")
+            cooldown_disarm(silent=True)
+            emit("cooldown", active=False)
+            return None
+        _cooldown_armed = False
+        _cooldown_serving = filename
+        log(f"Cool Down 触发：{filename} -> 放松视频 cooldown.mp4")
+        emit("cooldown", active=False)
+        refresh_queue_state()
+        return COOLDOWN_PATH
+    return None
 
 
 class LogWatcher(threading.Thread):
@@ -1845,6 +1926,7 @@ def stop_services():
         return
     _stop_event.set()
     cancel_library_download()
+    cooldown_disarm(silent=True)
     if _server:
         try:
             _server.shutdown()

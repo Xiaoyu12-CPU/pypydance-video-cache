@@ -5,6 +5,7 @@
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -49,6 +50,8 @@ class DanceCacheApp:
         style.configure("Big.TButton", font=("", 12, "bold"), padding=(18, 8))
         self.toggle_btn = ttk.Button(top, text="停止服务", command=self.toggle_service, style="Big.TButton")
         self.toggle_btn.pack(side=tk.RIGHT)
+        self.cooldown_btn = ttk.Button(top, text="Cool Down", command=self.cooldown_toggle)
+        self.cooldown_btn.pack(side=tk.RIGHT, padx=(0, 8), ipady=4)
         self.state_label = ttk.Label(top, text="● 已停止", foreground="gray", font=("", 12, "bold"))
         self.state_label.pack(side=tk.RIGHT, padx=12)
 
@@ -140,6 +143,7 @@ class DanceCacheApp:
         self.queue_tree.tag_configure("cached", foreground="green")
         self.queue_tree.tag_configure("downloading", foreground="orange")
         self.queue_tree.tag_configure("external", foreground="gray")
+        self.queue_tree.tag_configure("cooldown", foreground="purple")
 
         df = ttk.LabelFrame(self.root, text="下载中", padding=4)
         df.pack(fill=tk.X, padx=8, pady=4)
@@ -228,6 +232,8 @@ class DanceCacheApp:
             self.lib_label.config(
                 text=f"{state}: 共 {data['total']} 个, 不一致 {data['bad']}, YouTube源跳过 {data['skipped']}, 失败 {data['failed']}"
             )
+        elif kind == "cooldown":
+            self.cooldown_btn.config(text="Cool Down")
         elif kind == "speedtest_done":
             self.speedtest_btn.config(state=tk.NORMAL)
             self.fullscan_btn.config(state=tk.NORMAL)
@@ -260,7 +266,8 @@ class DanceCacheApp:
         for row in self.queue_tree.get_children():
             self.queue_tree.delete(row)
         for it in items:
-            tag = {"已缓存": "cached", "下载中": "downloading", "外部源": "external", "YouTube源": "external"}.get(it["state"], "")
+            tag = {"已缓存": "cached", "下载中": "downloading", "外部源": "external",
+                   "YouTube源": "external", "Cool Down": "cooldown"}.get(it["state"], "")
             self.queue_tree.insert("", tk.END, values=(it["state"], it["name"], it["player"]), tags=(tag,))
 
     def _update_progress(self, fn, done, total):
@@ -289,6 +296,30 @@ class DanceCacheApp:
                 self.events.put(("start_error", {"msg": err}))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def cooldown_toggle(self):
+        """Cool Down：待命后切到下一首歌时播放放松视频（cooldown.mp4），一次性"""
+        if dc.cooldown_active():
+            dc.cooldown_disarm()
+            self.cooldown_btn.config(text="Cool Down")
+            return
+        if not dc.cooldown_available():
+            src = filedialog.askopenfilename(
+                title="选择放松视频（将复制为 exe 旁的 cooldown.mp4，以后直接点 Cool Down 即可）",
+                filetypes=[("视频文件", "*.mp4"), ("所有文件", "*.*")])
+            if not src:
+                return
+            try:
+                shutil.copy2(src, dc.COOLDOWN_PATH)
+            except Exception as e:
+                messagebox.showerror("Cool Down", f"复制失败: {e}")
+                return
+            self._append_log(f"放松视频已设置: {os.path.basename(src)} -> cooldown.mp4")
+        if not dc.is_running():
+            messagebox.showwarning("Cool Down", "请先启动服务")
+            return
+        if dc.cooldown_arm():
+            self.cooldown_btn.config(text="Cool Down（待命中，点击取消）")
 
     def toggle_service(self):
         if dc.is_running():
