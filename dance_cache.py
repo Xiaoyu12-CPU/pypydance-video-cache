@@ -533,7 +533,8 @@ def clean_stale_hosts():
     except FileNotFoundError:
         pass
     except PermissionError:
-        log("错误: 无权限修改 hosts，请以管理员身份运行")
+        log("错误: 无法写入 hosts 文件。若已用管理员身份运行，可能是加速器(如雷神)锁住了 hosts，"
+            "请关闭加速器的 hosts 防护，或先启动本软件再开加速器")
         raise
 
 
@@ -1891,7 +1892,8 @@ def start_services():
             except Exception:
                 pass
             _tunnel_sock = None
-        return "无权限修改 hosts，请以管理员身份运行"
+        return ("无法写入 hosts 文件。\n\n如果已经是管理员身份运行，很可能是加速器（如雷神）锁住了 hosts 文件。\n"
+                "解决办法：关闭加速器的 hosts 防护/锁定功能；或先启动本软件，再开加速器。")
     threading.Thread(target=_server.serve_forever, daemon=True).start()
     if _tunnel_sock:
         threading.Thread(target=_tunnel_loop,
