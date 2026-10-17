@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 from dance_ui.theme import (
     ThemeStore, ThemeError, BUILTIN_THEMES, DEFAULT_PREFERENCES, MAX_IMAGE_BYTES,
-    BUNDLED_PRESET_DIR,
 )
 
 
@@ -36,8 +35,7 @@ class ThemeStoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        # Keep these regressions rooted in a legacy light profile. Fresh
-        # installation of the shipped preset is covered by test_presets.py.
+        # Exercise loading an existing profile as well as fresh defaults.
         legacy = self.root / "appearance"
         legacy.mkdir()
         (legacy / "appearance.json").write_text(json.dumps({
@@ -218,8 +216,7 @@ class ThemeStoreTests(unittest.TestCase):
         broken = b'{"version": 1, invalid'
         self.store.path.write_bytes(broken)
         recovered = ThemeStore(self.store.root_dir)
-        shipped = json.loads((BUNDLED_PRESET_DIR / "theme.json").read_text(encoding="utf-8"))["theme"]
-        self.assertEqual(recovered.active, shipped)
+        self.assertEqual(recovered.active, BUILTIN_THEMES["light"])
         backups = list(self.store.root_dir.glob("appearance.corrupt-*.json"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), broken)
@@ -241,8 +238,7 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(recovered.active_id, "light")
         independent = ThemeStore(self.root / "another-store")
         self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)
-        shipped = json.loads((BUNDLED_PRESET_DIR / "theme.json").read_text(encoding="utf-8"))["theme"]
-        self.assertEqual(independent.active, shipped)
+        self.assertEqual(independent.active, BUILTIN_THEMES["light"])
 
 
 if __name__ == "__main__":

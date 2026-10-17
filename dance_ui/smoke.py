@@ -1,20 +1,20 @@
 """Bounded demo-only checks for the executable produced by Windows CI."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 import traceback
 
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import qVersion
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
-from PIL import __version__ as pillow_version
+from PIL import Image, __version__ as pillow_version
 
 from . import __version__
-from .theme import BUNDLED_PRESET_DIR, THEME_FIELDS
+from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES
 
 
 def _check_openvr_library(report: dict) -> None:
@@ -46,23 +46,34 @@ def inspect_demo(window) -> dict:
         _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))
-        snapshot = json.loads((BUNDLED_PRESET_DIR / "theme.json").read_text(encoding="utf-8"))
-        expected = snapshot["theme"]
-        if window.store.active_id != expected["id"]:
-            raise ValueError("Use a fresh state directory to check the shipped default theme.")
-        for field in THEME_FIELDS | {"id", "name", "base"}:
-            if window.store.active[field] != expected[field]:
-                raise ValueError("Shipped theme differs from the snapshot: " + field)
-        if window.store.preferences != snapshot["preferences"]:
-            raise ValueError("Fresh reading preferences differ from the shipped snapshot.")
-        image = window.store.background_path()
-        if image is None or hashlib.sha256(image.read_bytes()).hexdigest() != snapshot["background_sha256"]:
-            raise ValueError("The shipped background is missing or changed.")
-        if window.backdrop.image is None:
-            raise ValueError("Pillow could not decode the shipped background.")
+        if window.store.active != BUILTIN_THEMES["light"]:
+            raise ValueError("Use a fresh state directory to check the default light theme.")
+        if {theme["id"] for theme in window.store.themes} != {"light", "dark"}:
+            raise ValueError("Fresh profiles should contain only the built-in light/dark themes.")
+        if window.store.preferences != DEFAULT_PREFERENCES:
+            raise ValueError("Fresh reading preferences differ from the built-in defaults.")
+        report["theme_id"] = window.store.active_id
         report["theme_name"] = window.store.active["name"]
-        report["background_sha256"] = snapshot["background_sha256"]
-        report["checks"].append("shipped_theme_and_pillow_background")
+        report["checks"].append("builtin_light_theme")
+        # Exercise Pillow -> Qt without shipping a large wallpaper or importing
+        # into the user's managed backgrounds. Only the widget changes, and the
+        # normal appearance is restored even if decoding/rendering fails.
+        try:
+            with tempfile.TemporaryDirectory(prefix="pypydance-smoke-image-") as directory:
+                image = Path(directory) / "render-check.png"
+                Image.new("RGB", (8, 6), (40, 90, 180)).save(image)
+                theme = dict(window.store.active, image_opacity=1.0, image_blur=0.0)
+                window.backdrop.set_appearance(theme, image)
+                QApplication.processEvents()
+                window.grab()
+                if window.backdrop.image is None:
+                    raise ValueError("Pillow could not decode the generated background.")
+                if window.backdrop._render is None or window.backdrop._render.isNull():
+                    raise ValueError("The Pillow-to-Qt background rendering failed.")
+                report["checks"].append("pillow_generated_background")
+        finally:
+            window.apply_appearance()
+            QApplication.processEvents()
         for name in ("check-light", "check-dark", "up", "down"):
             if QPixmap(":/controls/" + name + ".svg").isNull():
                 raise ValueError("Qt could not decode the embedded SVG: " + name)
@@ -77,8 +88,6 @@ def inspect_demo(window) -> dict:
                 raise ValueError("Navigation did not show page " + titles[index])
             if window.grab().isNull():
                 raise ValueError("Qt could not render page " + titles[index])
-        if window.backdrop._render is None or window.backdrop._render.isNull():
-            raise ValueError("The Pillow-to-Qt background rendering failed.")
         report["checks"].append("four_page_navigation_and_rendering")
         report["status"] = "passed"
     except Exception:

@@ -1,8 +1,8 @@
-name: Windows preview build
+name: Windows build and stable release
 
 on:
   push:
-    branches: [ui-redesign]
+    branches: [ui-redesign, main]
   workflow_dispatch:
 
 permissions:
@@ -123,7 +123,7 @@ jobs:
           python tools/package_windows.py
           if ($LASTEXITCODE -ne 0) { throw "Release asset preparation failed." }
 
-      - name: Upload the verified preview assets
+      - name: Upload the verified Windows assets
         uses: actions/upload-artifact@v4
         with:
           name: PyPyDanceCache-windows-x64
@@ -140,12 +140,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  publish-preview:
+  publish-release:
     needs: windows-x64
     if: >-
       github.repository == 'Xiaoyu12-CPU/pypydance-video-cache' &&
       github.event_name == 'push' &&
-      contains(github.event.head_commit.message, '[publish-preview]')
+      github.ref == 'refs/heads/main' &&
+      contains(github.event.head_commit.message, '[publish-release]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -165,7 +166,7 @@ jobs:
           name: PyPyDanceCache-windows-x64
           path: release
 
-      - name: Publish the requested Windows preview
+      - name: Publish the requested stable Windows release
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_windows_preview.py --assets release

@@ -1,6 +1,6 @@
-# PyPyDance Cache · UI 重构版
+# PyPyDance Cache 2.0.0
 
-VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。本分支保留原有缓存核心与命令行入口，使用 Qt for Python 重构桌面界面。
+VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。保留原有缓存核心与命令行入口，使用 Qt for Python 重构桌面界面。
 
 **原作者：Bilibili @鲨鲨比亚Sharkspeare**
 
@@ -28,15 +28,19 @@ VRChat PyPyDance 跳舞房视频本地缓存工具，面向 Windows。本分支�
 
 业务配置编辑后通过**应用更改**提交。修改 YouTube 缓存开关或保存目录前，需要先停止服务；修改目录时还需等待后台下载和曲库任务结束。应用后再次启动服务。外观调整立即预览并自动保存，与业务配置分开。
 
-程序随附用户在 Mac 演示窗口保存的 **“小余12主题”**，包括原背景图、紫色强调色、半透明导航与卡片。全新的外观目录首次选中此主题，并采用该快照的阅读偏好；已有外观配置保留当前主题和个人调整，可在“外观”页选择“小余12主题”。浅色、深色基础方案继续保留。
+正式版默认使用浅蓝布局，提供浅色、深色和自定义主题。主题配色、背景导入、透明度、缩放和密度继续可用，个人调整保存在本机。
 
-主题与背景已纳入源码及 Windows 打包资源，不依赖 Mac 上的图片路径。随附主题可以编辑、复制和重置，原始方案随程序保留；重置该主题或分组会回到保存的“小余12”快照。之后的个人调整仍保存在当前电脑的外观目录，不会自动更新仓库快照。
+为减小下载体积，正式版不再附带“小余12主题”和原背景。升级保留已有主题配置和个人导入图片；若旧主题的背景仅来自测试包资源且本机没有副本，将回退到主题底色，可重新导入背景。
+
+## 下载正式版
+
+前往 [v2.0.0 正式版](https://github.com/Xiaoyu12-CPU/pypydance-video-cache/releases/tag/v2.0.0)，下载 **PyPyDanceCache-windows-x64.zip**，完整解压并运行其中的 `PyPyDanceCache.exe`，无需安装 Python。保留同目录的 `_internal` 和说明文件。
 
 ### 当前界面
 
 下图由真实 Qt 界面的 `--demo` 数据生成。
 
-![运行页 · 小余12主题](docs/screenshots/run-xiaoyu12.png)
+![运行页 · 默认浅蓝布局](docs/screenshots/run-light.png)
 
 ![外观页](docs/screenshots/appearance.png)
 
@@ -73,7 +77,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe dance_cache_gui.py --demo --state-dir .\.demo-state
 ```
 
-`--state-dir` 只指定外观状态目录，不改变缓存、曲库、`config.json` 或 `mapping.json` 的位置。Linux/macOS 可使用对应虚拟环境的 `bin/python` 运行演示；真实缓存服务仍面向 Windows。
+`--state-dir` 指定界面本机状态目录（外观、CDN 收藏和 SteamVR 注册文件），不改变缓存、曲库、`config.json` 或 `mapping.json` 的位置。Linux/macOS 可使用对应虚拟环境的 `bin/python` 运行演示；真实缓存服务仍面向 Windows。
 
 ### Mac 双击测试入口
 
@@ -110,7 +114,7 @@ py -3.12 -m venv .venv
 - 本地 80 端口可用；443 端口不可用时，相关能力可能降级。
 - 使用代理时，本机 `127.0.0.1` 流量仍能到达本地服务。
 
-**真实 Windows + VRChat 的端到端行为仍需在目标环境验证。**演示画面和隔离测试不代表真实服务已经验收。
+**用户已反馈在 Windows 运行 VRChat 实际验证，软件能够正常工作。**这是发布前的用户人工反馈；未逐项提供结果的 SteamVR 跟随启动、hosts 恢复、YouTube 源、旧曲库迁移及不同缩放设置仍需按实际环境检查。自动化测试与演示检查单独记录。
 
 ## 数据保存位置
 
@@ -122,7 +126,7 @@ py -3.12 -m venv .venv
 | 外观与导入背景 | Qt `QStandardPaths.AppLocalDataLocation` 下的 `appearance` 目录，以当前系统实际路径为准 |
 | 演示外观状态 | 默认临时目录；指定 `--state-dir` 后使用并保留指定目录 |
 
-外观应用标识为组织 `Xiaoyu12-CPU`、应用 `PyPyDanceCache`。个人导入背景复制到外观数据目录，保留原图片；随附“小余12主题”的原背景从只读程序资源加载。主题及背景与视频缓存分开。
+外观应用标识为组织 `Xiaoyu12-CPU`、应用 `PyPyDanceCache`。个人导入背景复制到外观数据目录，保留原图片；正式版不包含个人主题或预置背景图片。主题及背景与视频缓存分开。
 
 业务配置继续写在程序旁，请把程序放在适合当前账户读写的目录。仅备份 exe 不会包含配置、曲库和个人主题。
 
@@ -136,7 +140,7 @@ python dance_cache.py
 
 ## 自行构建 Windows 版
 
-测试版的自动构建由开发分支的 GitHub Actions 执行：先运行完整隔离测试，再构建并打开冻结 exe 的演示模式，检查四页、SVG 控件图标、Pillow 背景解码与随附主题。通过后提供完整目录 ZIP、SHA-256 和实际构建报告。经显式触发发布的预发行版仍需按 [Windows 试用说明](docs/WINDOWS_PREVIEW.md) 验证真实 VRChat 行为。
+`main` 与开发分支的 GitHub Actions 先运行完整隔离测试，再构建并打开冻结 exe 的演示模式，检查四页、默认浅蓝主题、SVG 控件图标、Pillow 背景渲染和 OpenVR DLL 加载。通过后提供完整目录 ZIP、SHA-256 和实际构建报告；正式发布由 `main` 的显式发布提交触发。使用和升级步骤见 [Windows 使用说明](docs/WINDOWS_PREVIEW.md)。
 
 在 Windows 原生 Python 环境执行：
 

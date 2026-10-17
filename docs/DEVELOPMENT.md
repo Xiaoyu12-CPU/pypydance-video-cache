@@ -76,15 +76,11 @@ API 依据：[Valve OpenVR 接口定义](https://github.com/ValveSoftware/openvr
 
 `cdn-favorites.json` 与 `appearance.json` 放在同一个本机状态目录，保存去重后的公网 IPv4 地址列表，不随程序发布。测速结果按速度排序并支持收藏；收藏可再次选择使用或删除。收藏与业务设置分开原子保存，收藏操作不提交其他草稿，使用收藏只填入优选 IP，需“应用更改”后生效。历史收藏不代表当前可用性或速度。演示默认使用临时目录；传入 `--state-dir` 可验证收藏跨启动保留。
 
-### 随附的小余12主题
+### 正式版主题与升级
 
-`dance_ui/presets/xiaoyu12/theme.json` 保存用户在 Mac 演示窗口创建的“小余12主题”、阅读偏好和背景校验值；同目录的 `background.png` 为用户选用的原图副本。两者作为项目资源提交，后续上传和打包时保留，不使用开发机的绝对路径。
+2.0.0 正式版只内置 `light` / `dark` 基础主题，新用户默认浅蓝布局。不分发测试版“小余12主题”的快照或原背景，因此不再把 `dance_ui/presets` 加入 Windows 构建。背景导入和自定义主题功能继续可用。
 
-`ThemeStore` 保持 `light` / `dark` 基础主题，另载入随附快照。全新外观目录选中“小余12主题”并初始化快照偏好；已有配置只补充缺失的随附主题，同 ID 的个人配色、名称、当前选择及阅读偏好不覆盖。旧文件缺少选择或偏好字段时仍按原来的浅色和默认偏好回退。
-
-随附主题不可删除，但可编辑、复制和撤销；重置当前主题或分组以快照为初值，自定义副本仍按原浅色/深色基础重置。个人导入的同名背景优先从外观目录加载，缺失时可回退随附原图；包内资源只读，配置与个人图片继续写在用户可写目录。资源缺失或损坏时显示警告，并保留旧配置文件。
-
-Windows 脚本和根目录 spec 均需收集整个 `dance_ui/presets` 到 `dance_ui/presets`。PyInstaller 6 onedir 默认布局中位于 `_internal/dance_ui/presets`，代码根据模块 `__file__` 定位，禁止硬编码 Mac 路径。打包后仍须在 Windows 实际验证背景解码与启动。
+用户已有外观文件保留其主题、当前选择和阅读偏好；原随附主题若已写入个人配置，继续作为个人主题使用。原背景在本机已有导入副本时仍可加载；若仅引用旧包资源而本机没有副本，则回退主题底色。更新程序不会删除个人外观目录。
 
 ## 页面职责与状态约束
 
@@ -139,23 +135,23 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 - 启动文件：`dist\PyPyDanceCache\PyPyDanceCache.exe`。
 - 分发完整目录，包括 `_internal`，不能单独复制 exe。
 - `--uac-admin` 会让打包版每次启动请求提权，包括 `--demo`。从源码运行演示无需因为缓存服务申请提权。
-- 随附“小余12主题”和原背景作为只读资源打包；其他个人主题、背景、配置和视频不打入程序包，其存储规则见上文。
+- 不打包“小余12主题”、个人背景、配置或视频。发布验证会拒绝意外夹带的预置主题资源。
 - 构建脚本不签名、不上传、不创建 Release 或 PR。
 - `--clean --noconfirm` 会替换同名构建产物，不要把正式配置或个人视频保存在构建输出目录中。
 
 构建完成后，需要真实启动产物，确认 Qt 平台插件、中文文字、文件对话框、图片解码及关闭流程。构建成功不代表真实缓存服务已经验收。
 
-### Windows 预发行构建与冻结程序检查
+### Windows 构建、正式发布与冻结程序检查
 
-`.github/workflows/windows-preview.yml` 在 `ui-redesign` 推送后使用原生 Windows x64 / Python 3.12 构建，无须改动 `main`。完整隔离测试必须零失败、零错误、零跳过，随后运行打包后的 exe：
+`.github/workflows/windows-preview.yml` 在 `ui-redesign` 或 `main` 推送后使用原生 Windows x64 / Python 3.12 构建。完整隔离测试必须零失败、零错误、零跳过，随后运行打包后的 exe：
 
 ```powershell
 .\dist\PyPyDanceCache\PyPyDanceCache.exe --demo --state-dir TEMP_PATH --smoke-test-report REPORT_PATH
 ```
 
-该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、Pillow 到 Qt 的背景渲染及“小余12主题”快照，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
+该自动检查参数仅与 `--demo` 一起使用，检查四页导航、SVG 资源、默认浅蓝主题及使用临时合成图片的 Pillow 到 Qt 背景渲染，写 JSON 后自动退出。报告必须确认 `win32`、Qt `windows` 平台和 `frozen=true`，才能由 `tools/package_windows.py` 生成完整目录 ZIP、SHA-256 及构建信息。实际报告也保存在包内 `docs/build-info.json`。
 
-普通推送只构建。显式发布提交在消息中使用 `[publish-preview]`，才会启用限定本 Fork 的发布任务，由 GitHub runner 直接上传完整包。`tools/publish_windows_preview.py` 在上传前后核对测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布为预发行版；不覆盖已发布 Release 或冲突标签，不改动 `main`。
+普通推送只构建。只有本 Fork 的 `main` 分支 push 且提交消息包含 `[publish-release]` 时才发布正式版。`tools/publish_windows_preview.py` 保留历史文件名，在上传前后核对版本、测试、源码提交、ZIP 和远程附件 SHA，恢复同版本草稿后发布 `v2.0.0`，设为非预发行版及最新版本；不覆盖已发布 Release 或冲突标签。
 
 冻结演示检查会加载打包的 Windows x64 OpenVR DLL，但不初始化或注册 SteamVR；只收集本机平台的 64 位 DLL 与许可。冻结演示检查仍使用示例数据，不验证 UAC 人工点击、真实服务、hosts 恢复、旧曲库兼容或 VRChat 请求。用户试用说明见 [WINDOWS_PREVIEW.md](WINDOWS_PREVIEW.md)。
 
@@ -171,7 +167,7 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name PyPyDanceCa
 
 无显示服务的环境可用 `QT_QPA_PLATFORM=offscreen` 做 Qt 渲染检查。这不能代替 Windows 原生对话框、中文字体、125%/150% 缩放、UAC、服务启动/关闭及 VRChat 实际请求测试。
 
-验证记录需区分隔离测试、Windows 打包/交互、VRChat 视频请求三个层次。**本开发环境没有完成真实 Windows + VRChat 端到端验收**；示例画面或离屏测试不能描述为真实服务测试通过。
+验证记录需区分隔离测试、Windows 打包/交互、VRChat 视频请求三个层次。**发布前用户已反馈在 Windows 运行 VRChat 实测正常；开发代理未在本机执行该实机测试**；示例画面或离屏测试不能描述为真实服务测试通过。
 
 ## 作者与许可
 

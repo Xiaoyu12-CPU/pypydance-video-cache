@@ -37,8 +37,6 @@ def main() -> int:
     required = (
         "PyPyDanceCache.exe",
         "_internal/python312.dll",
-        "_internal/dance_ui/presets/xiaoyu12/theme.json",
-        "_internal/dance_ui/presets/xiaoyu12/background.png",
         "README.md",
         "LICENSE",
         "docs/DEVELOPMENT.md",
@@ -51,10 +49,14 @@ def main() -> int:
             raise SystemExit(f"The Windows bundle is incomplete: missing {relative}")
     if not (bundle / "THIRD_PARTY_LICENSES").is_dir():
         raise SystemExit("The Windows bundle is missing third-party license materials.")
+    if any("presets" in tuple(part.casefold() for part in path.relative_to(bundle).parts)
+           for path in bundle.rglob("*")):
+        raise SystemExit("Stable release bundles must not include bundled preset resources.")
 
     tests = read_json(args.reports / "unit-tests.json")
     smoke = read_json(args.reports / "frozen-smoke.json")
-    if tests.get("status") != "passed" or tests.get("tests_run", 0) < 1:
+    if (tests.get("status") != "passed" or tests.get("platform") != "win32"
+            or tests.get("tests_run", 0) < 1 or tests.get("passed") != tests.get("tests_run")):
         raise SystemExit("The full isolated test suite has not passed.")
     if any(tests.get(key) for key in (
         "failures", "errors", "skipped", "expected_failures", "unexpected_successes",
@@ -63,6 +65,12 @@ def main() -> int:
     if (
         smoke.get("status") != "passed" or smoke.get("frozen") is not True
         or smoke.get("platform") != "win32" or smoke.get("qt_platform") != "windows"
+        or smoke.get("application_version") != "2.0.0" or smoke.get("theme_id") != "light"
+        or not {
+            "demo_mode", "builtin_light_theme", "pillow_generated_background",
+            "embedded_svg_icons", "four_page_navigation_and_rendering",
+            "openvr_library_loaded_without_initialization",
+        }.issubset(smoke.get("checks", []))
     ):
         raise SystemExit("A passing frozen-demo smoke report using native Windows Qt is required.")
 
@@ -86,10 +94,22 @@ def main() -> int:
         "dependencies": dependencies,
         "isolated_tests": tests,
         "frozen_demo_smoke": smoke,
+        "user_reported_validation": {
+            "source": "Direct user feedback before the stable release",
+            "environment": "Windows running VRChat",
+            "result": "User reported that the development version operated normally in actual use.",
+            "scope": "Prior development build; separate from this commit's automated checks.",
+            "individual_features_not_confirmed": [
+                "SteamVR automatic startup and the associated UAC interaction",
+                "hosts restoration after service shutdown",
+                "Every CDN/YouTube cache scenario and old library migration",
+            ],
+        },
         "not_verified": [
-            "Windows manual UI interaction and display scaling",
-            "Real service startup/shutdown, hosts restoration, and existing library compatibility",
-            "VRChat video requests and real cache/download behavior",
+            "SteamVR automatic startup and the associated UAC interaction",
+            "hosts restoration after service shutdown",
+            "Individual CDN/YouTube cache scenarios and existing library migration",
+            "Windows display scaling configurations and stable-package manual regression",
         ],
         "distribution": "Extract and keep the complete PyPyDanceCache folder, including _internal.",
     }
@@ -121,7 +141,8 @@ def main() -> int:
     print(f"SHA256: {digest}")
     print(f"Commit: {commit}")
     print(f"Tests: {tests['tests_run']} run; {len(tests.get('skipped', []))} skipped")
-    print("Packaged demo smoke: passed; real Windows + VRChat verification remains pending.")
+    print("Packaged demo smoke: passed. Prior Windows + VRChat normal operation was user-reported;")
+    print("SteamVR startup/UAC, hosts restoration, and other detailed manual checks remain pending.")
     return 0
 
 

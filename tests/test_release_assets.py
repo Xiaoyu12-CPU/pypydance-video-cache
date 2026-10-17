@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
+from tools import package_windows as packager
 from tools import publish_windows_preview as publisher
 
 
@@ -94,6 +95,7 @@ class ReleaseAssetTests(unittest.TestCase):
         self.addCleanup(self.block_process.stop)
         self.info = {
             "git_sha": self.SHA,
+            "build_platform": "Windows synthetic test fixture",
             "isolated_tests": {
                 "status": "passed", "platform": "win32", "tests_run": 3, "passed": 3,
                 "failures": [], "errors": [], "skipped": [],
@@ -102,22 +104,40 @@ class ReleaseAssetTests(unittest.TestCase):
             "frozen_demo_smoke": {
                 "status": "passed", "frozen": True, "platform": "win32",
                 "qt_platform": "windows", "application_version": publisher.TAG.removeprefix("v"),
+                "theme_id": "light", "checks": sorted(publisher.REQUIRED_SMOKE_CHECKS),
+                "qt_version": "6.synthetic", "pillow_version": "synthetic",
             },
         }
 
-    def write_assets(self, info=None):
+    def write_assets(self, info=None, extra_files=None):
         info = copy.deepcopy(self.info if info is None else info)
         text = json.dumps(info, ensure_ascii=False)
         archive = self.assets / "PyPyDanceCache-windows-x64.zip"
         with ZipFile(archive, "w") as zipped:
             for name in ("PyPyDanceCache.exe", "_internal/python312.dll", "打开演示.bat"):
                 zipped.writestr("PyPyDanceCache/" + name, b"tiny synthetic fixture")
+            for name, contents in (extra_files or {}).items():
+                zipped.writestr("PyPyDanceCache/" + name, contents)
             zipped.writestr("PyPyDanceCache/docs/build-info.json", text)
         (self.assets / "build-info.json").write_text(text, encoding="utf-8")
         (self.assets / (archive.name + ".sha256")).write_text(
             publisher.digest(archive) + "  " + archive.name + "\n", encoding="ascii",
         )
         return info
+
+    def publication_environment(self, **overrides):
+        event = self.assets / "github-event.json"
+        event.write_text(json.dumps({
+            "after": self.SHA, "head_commit": {"message": "Release 2.0.0 [publish-release]"},
+        }), encoding="utf-8")
+        environment = {
+            "GITHUB_REPOSITORY": publisher.REPOSITORY, "GITHUB_SHA": self.SHA,
+            "GITHUB_ACTIONS": "true", "GH_TOKEN": "synthetic-test-token",
+            "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": str(event), "GITHUB_RUN_ID": "synthetic-run",
+        }
+        environment.update(overrides)
+        return environment
 
     def remote_assets(self, files):
         return {
@@ -148,6 +168,8 @@ class ReleaseAssetTests(unittest.TestCase):
             ("frozen_demo_smoke", "frozen", False),
             ("frozen_demo_smoke", "platform", "darwin"),
             ("frozen_demo_smoke", "application_version", "2.0.0-preview.999"),
+            ("frozen_demo_smoke", "theme_id", "custom-theme"),
+            ("frozen_demo_smoke", "checks", ["demo_mode"]),
         ]
         for section, key, value in cases:
             with self.subTest(section=section, field=key):
@@ -158,6 +180,17 @@ class ReleaseAssetTests(unittest.TestCase):
                     info[section][key] = value
                 self.write_assets(info)
                 with self.assertRaises(ValueError):
+                    publisher.verify_assets(self.assets, self.SHA)
+
+    def test_rejects_bundled_presets_even_with_a_valid_checksum(self):
+        for name in (
+            "_internal/dance_ui/presets/xiaoyu12/theme.json",
+            "_internal/dance_ui/PRESETS/xiaoyu12/background.png",
+            "_internal\\dance_ui\\presets\\xiaoyu12\\background.png",
+        ):
+            with self.subTest(name=name):
+                self.write_assets(extra_files={name: b"excluded preset"})
+                with self.assertRaisesRegex(ValueError, "must not include bundled preset"):
                     publisher.verify_assets(self.assets, self.SHA)
 
     def test_rejects_remote_assets_with_wrong_hash_size_state_or_missing_file(self):
@@ -201,12 +234,9 @@ class ReleaseAssetTests(unittest.TestCase):
             verify.assert_not_called()
             gh.assert_not_called()
 
-    def test_refuses_to_replace_an_existing_preview_tag_at_another_commit(self):
+    def test_refuses_to_replace_an_existing_release_tag_at_another_commit(self):
         self.write_assets()
-        environment = {
-            "GITHUB_REPOSITORY": publisher.REPOSITORY, "GITHUB_SHA": self.SHA,
-            "GITHUB_ACTIONS": "true", "GH_TOKEN": "synthetic-test-token",
-        }
+        environment = self.publication_environment()
         arguments = ["publish_windows_preview.py", "--assets", str(self.assets)]
         with patch.object(sys, "argv", arguments), patch.dict(os.environ, environment, clear=True), \
                 patch.object(publisher, "tag_commit", return_value="b" * 40), \
@@ -216,6 +246,137 @@ class ReleaseAssetTests(unittest.TestCase):
                 publisher.main()
             api.assert_not_called()
             gh.assert_not_called()
+
+    def test_only_an_explicit_exact_main_push_can_publish(self):
+        cases = (
+            {"GITHUB_REF": "refs/heads/ui-redesign"},
+            {"GITHUB_REF": "refs/tags/v2.0.0"},
+            {"GITHUB_EVENT_NAME": "workflow_dispatch"},
+            {"GITHUB_ACTIONS": "false"},
+            {"GH_TOKEN": ""},
+            {"GITHUB_SHA": "b" * 40},
+            {"GITHUB_EVENT_PATH": str(self.assets / "missing-event.json")},
+        )
+        for override in cases:
+            with self.subTest(override=override):
+                environment = self.publication_environment(**override)
+                with patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaises(SystemExit):
+                        publisher.verify_publication_request()
+        for message in ("Release 2.0.0", "Release [publish-preview]"):
+            environment = self.publication_environment()
+            Path(environment["GITHUB_EVENT_PATH"]).write_text(json.dumps({
+                "after": self.SHA, "head_commit": {"message": message},
+            }), encoding="utf-8")
+            with self.subTest(message=message), patch.dict(os.environ, environment, clear=True):
+                with self.assertRaisesRegex(SystemExit, "explicitly request"):
+                    publisher.verify_publication_request()
+        with patch.dict(os.environ, self.publication_environment(), clear=True):
+            publisher.verify_publication_request()
+
+    def test_publishes_verified_draft_as_a_stable_latest_release(self):
+        self.write_assets()
+        _, files = publisher.verify_assets(self.assets, self.SHA)
+        uploaded = self.remote_assets(files) | {
+            "id": 7, "tag_name": publisher.TAG, "html_url": "https://example.invalid/release",
+        }
+        draft = uploaded | {"draft": True, "prerelease": False}
+        published = uploaded | {"draft": False, "prerelease": False}
+        with patch.object(sys, "argv", ["publish_windows_preview.py", "--assets", str(self.assets)]), \
+                patch.dict(os.environ, self.publication_environment(), clear=True), \
+                patch.object(publisher, "tag_commit", side_effect=[None, None, self.SHA]), \
+                patch.object(publisher, "api", side_effect=[[], [draft], published, published]), \
+                patch.object(publisher, "gh") as gh, redirect_stdout(io.StringIO()):
+            self.assertEqual(publisher.main(), 0)
+        create, upload, publish = [call.args for call in gh.call_args_list]
+        self.assertEqual(create[:3], ("release", "create", "v2.0.0"))
+        self.assertIn("--draft=true", create)
+        self.assertIn("--prerelease=false", create)
+        self.assertEqual(upload[:3], ("release", "upload", "v2.0.0"))
+        self.assertEqual(publish, (
+            "release", "edit", "v2.0.0", "--draft=false", "--prerelease=false", "--latest=true",
+        ))
+
+    def test_does_not_publish_a_draft_if_uploaded_assets_differ(self):
+        self.write_assets()
+        draft = {"id": 7, "tag_name": publisher.TAG, "draft": True, "assets": []}
+        with patch.object(sys, "argv", ["publish_windows_preview.py", "--assets", str(self.assets)]), \
+                patch.dict(os.environ, self.publication_environment(), clear=True), \
+                patch.object(publisher, "tag_commit", return_value=None), \
+                patch.object(publisher, "api", side_effect=[[], [draft]]), \
+                patch.object(publisher, "gh") as gh, redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "remote release asset"):
+                publisher.main()
+        self.assertEqual(len(gh.call_args_list), 2)
+        self.assertFalse(any("--draft=false" in call.args for call in gh.call_args_list))
+
+    def test_keeps_a_draft_private_if_the_tag_changes_during_upload(self):
+        self.write_assets()
+        _, files = publisher.verify_assets(self.assets, self.SHA)
+        draft = self.remote_assets(files) | {"tag_name": publisher.TAG, "draft": True}
+        with patch.object(sys, "argv", ["publish_windows_preview.py", "--assets", str(self.assets)]), \
+                patch.dict(os.environ, self.publication_environment(), clear=True), \
+                patch.object(publisher, "tag_commit", side_effect=[None, "b" * 40]), \
+                patch.object(publisher, "api", side_effect=[[], [draft]]), \
+                patch.object(publisher, "gh") as gh, redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(SystemExit, "changed during upload"):
+                publisher.main()
+        self.assertEqual(len(gh.call_args_list), 2)
+        self.assertFalse(any("--draft=false" in call.args for call in gh.call_args_list))
+
+    def test_never_overwrites_an_existing_published_release(self):
+        self.write_assets()
+        _, files = publisher.verify_assets(self.assets, self.SHA)
+        published = self.remote_assets(files) | {
+            "tag_name": publisher.TAG, "draft": False, "prerelease": False,
+            "html_url": "https://example.invalid/release",
+        }
+        with patch.object(sys, "argv", ["publish_windows_preview.py", "--assets", str(self.assets)]), \
+                patch.dict(os.environ, self.publication_environment(), clear=True), \
+                patch.object(publisher, "tag_commit", return_value=self.SHA), \
+                patch.object(publisher, "api", side_effect=[[published], published]), \
+                patch.object(publisher, "gh") as gh, redirect_stdout(io.StringIO()):
+            self.assertEqual(publisher.main(), 0)
+            gh.assert_not_called()
+
+    def test_packager_excludes_presets_and_records_user_feedback_separately(self):
+        bundle = self.assets / "PyPyDanceCache"
+        for name in (
+            "PyPyDanceCache.exe", "_internal/python312.dll", "README.md", "LICENSE",
+            "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md", "启动.bat", "打开演示.bat",
+        ):
+            target = bundle / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("synthetic package fixture", encoding="utf-8")
+        (bundle / "THIRD_PARTY_LICENSES").mkdir()
+        reports = self.assets / "reports"
+        reports.mkdir()
+        for name, value in (
+            ("unit-tests.json", self.info["isolated_tests"]),
+            ("frozen-smoke.json", self.info["frozen_demo_smoke"]),
+        ):
+            (reports / name).write_text(json.dumps(value), encoding="utf-8")
+        for name in ("dependencies.txt", "unit-tests.log"):
+            (reports / name).write_text("synthetic report", encoding="utf-8")
+        output = self.assets / "packaged"
+        arguments = ["package_windows.py", "--bundle", str(bundle), "--reports", str(reports),
+                     "--output", str(output)]
+        with patch.object(sys, "argv", arguments), patch.object(sys, "platform", "win32"), \
+                patch.object(packager.platform, "architecture", return_value=("64bit", "WindowsPE")), \
+                patch.object(packager.platform, "platform", return_value="Windows synthetic fixture"), \
+                patch.object(packager.subprocess, "check_output", return_value=self.SHA + "\n"), \
+                patch.dict(os.environ, {"GITHUB_SHA": self.SHA}, clear=True), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(packager.main(), 0)
+            info, _ = publisher.verify_assets(output, self.SHA)
+            self.assertEqual(info["user_reported_validation"]["environment"], "Windows running VRChat")
+            self.assertEqual(info["frozen_demo_smoke"], self.info["frozen_demo_smoke"])
+            self.assertTrue(info["not_verified"])
+            preset = bundle / "_internal/dance_ui/presets/xiaoyu12/background.png"
+            preset.parent.mkdir(parents=True)
+            preset.write_bytes(b"excluded large image fixture")
+            with self.assertRaisesRegex(SystemExit, "must not include bundled preset"):
+                packager.main()
 
 
 if __name__ == "__main__":

@@ -671,37 +671,81 @@ class UIIntegrationTests(unittest.TestCase):
             with self.subTest(core_operation=name):
                 mocked.assert_not_called()
 
-    def test_demo_smoke_report_checks_four_pages_svg_and_rendered_shipped_background(self):
+    def test_missing_previous_packaged_background_renders_base_color_without_resetting_theme(self):
+        from dance_ui.theme import BUILTIN_THEMES
+        from dance_ui.widgets import Backdrop
+
+        window, _, store = self.make_window()
+        theme_id = store.create("小余12主题")
+        store.change({
+            "accent": "#B5A5E0", "background_color": "#FFFFFF",
+            "background_opacity": 0.0, "nav_opacity": 0.3,
+            "background_image": "backgrounds/previous-packaged-image.png",
+        })
+        original = store.path.read_bytes()
+        for _ in range(3):
+            window.apply_appearance()
+            QApplication.processEvents()
+            self.assertIsNone(window.backdrop.image)
+            self.assertFalse(window.grab().isNull())
+        self.assertEqual(store.active_id, theme_id)
+        self.assertEqual(store.active["accent"], "#B5A5E0")
+        self.assertEqual(store.warnings, [])
+        self.assertEqual(store.path.read_bytes(), original)
+        backdrop = Backdrop()
+        try:
+            backdrop.resize(24, 24)
+            backdrop.set_appearance(store.active, store.background_path())
+            backdrop.show()
+            image = backdrop.grab().toImage()
+            self.assertEqual(image.pixelColor(4, 4).name().upper(),
+                             BUILTIN_THEMES["light"]["background_color"])
+        finally:
+            backdrop.close()
+
+    def test_demo_smoke_report_checks_four_pages_svg_and_temporary_background_without_saving(self):
         from dance_ui.smoke import inspect_demo
 
-        window, _, _ = self.make_window()
+        window, _, store = self.make_window()
+        original = store.path.read_bytes()
+        original_theme, original_preferences = store.active, store.preferences
         report = inspect_demo(window)
         self.assertEqual(report["status"], "passed", report.get("error"))
         self.assertFalse(report["frozen"])
         self.assertFalse(report["real_service_tested"])
         self.assertFalse(report["vrchat_tested"])
-        self.assertEqual(report["theme_name"], "小余12主题")
+        self.assertEqual(report["theme_name"], "浅色")
+        self.assertEqual(report["theme_id"], "light")
         self.assertEqual(report["checks"], [
-            "demo_mode", "shipped_theme_and_pillow_background",
+            "demo_mode", "builtin_light_theme", "pillow_generated_background",
             "embedded_svg_icons", "four_page_navigation_and_rendering",
         ])
         self.assertEqual(window.stack.currentIndex(), 3)
-        self.assertIsNotNone(window.backdrop.image)
-        self.assertIsNotNone(window.backdrop._render)
-        self.assertFalse(window.backdrop._render.isNull())
+        self.assertIsNone(window.backdrop.image)
+        self.assertEqual(window.backdrop.theme, original_theme)
+        self.assertEqual(store.active, original_theme)
+        self.assertEqual(store.preferences, original_preferences)
+        self.assertEqual(store.path.read_bytes(), original)
+        self.assertEqual(list(store.background_dir.iterdir()), [])
+        self.assertFalse(store.can_undo)
         for name, mocked in self.core_mocks.items():
             with self.subTest(core_operation=name):
                 mocked.assert_not_called()
 
-    def test_demo_smoke_report_fails_when_shipped_background_cannot_be_decoded(self):
+    def test_demo_smoke_report_fails_on_image_decode_and_restores_appearance(self):
         from dance_ui.smoke import inspect_demo
 
-        window, _, _ = self.make_window()
-        window.backdrop.image = None
-        report = inspect_demo(window)
+        window, _, store = self.make_window()
+        original = store.path.read_bytes()
+        with patch("dance_ui.widgets.Image.open", side_effect=OSError("decode failed")):
+            report = inspect_demo(window)
         self.assertEqual(report["status"], "failed")
-        self.assertIn("Pillow could not decode the shipped background", report["error"])
-        self.assertNotIn("shipped_theme_and_pillow_background", report["checks"])
+        self.assertIn("Pillow could not decode the generated background", report["error"])
+        self.assertNotIn("pillow_generated_background", report["checks"])
+        self.assertEqual(window.backdrop.theme, store.active)
+        self.assertIsNone(window.backdrop.image)
+        self.assertEqual(store.path.read_bytes(), original)
+        self.assertEqual(list(store.background_dir.iterdir()), [])
         for name, mocked in self.core_mocks.items():
             with self.subTest(core_operation=name):
                 mocked.assert_not_called()

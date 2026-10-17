@@ -68,7 +68,6 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
         "--workpath", (Join-Path $projectRoot "build"),
         "--specpath", (Join-Path $projectRoot "build"),
         "--additional-hooks-dir", (Join-Path $projectRoot "tools\pyinstaller_hooks"),
-        "--add-data", ((Join-Path $projectRoot "dance_ui\presets") + ";dance_ui/presets"),
         "dance_cache_gui.py"
     )
 
