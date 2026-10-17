@@ -1,0 +1,3 @@
+# QtCore, QtGui, and QtWidgets are included in Essentials.
+PySide6-Essentials==6.12.0
+Pillow>=10.4,<13

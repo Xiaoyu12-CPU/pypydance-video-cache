@@ -1,20 +1,32 @@
-# Python
+# Python and local environments
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+.coverage
+htmlcov/
 
-# PyInstaller
+# Generated Windows bundles (the existing tracked spec remains versioned)
 build/
 dist/
 *.spec
 !VRChat PyPyDance助手.spec
-
-# 运行时生成（配置 / 映射表 / 缓存 / 日志）
-config.json
-mapping.json
-error.log
-cache/
-cookie/
-
-# 打包产物与本地备份
 *.exe
 *_备份/
+
+# Runtime data and personal media
+config.json
+mapping.json
+cache/
+cookie/
+error.log
+*.log
+.demo-state/
+.ui-state/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

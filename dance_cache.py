@@ -13,6 +13,7 @@ YouTube 源：劫持 api.pypy.dance 的 302 重定向（纯 HTTP，零证书）�
 """
 
 import ctypes
+import copy
 import http.client
 import ipaddress
 import json
@@ -24,6 +25,7 @@ import socket
 import ssl
 import sys
 import threading
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -69,7 +71,23 @@ DEFAULT_CONFIG = {
 _config = {}
 _origin_ips = {}             # host -> [ip, ...]
 _downloads_in_progress = {}  # 目标路径 -> thread
-_downloads_lock = threading.Lock()
+_downloads_lock = threading.RLock()
+_download_meta = {}          # 规范化目标路径 -> GUI 可读任务元信息
+_download_results = {}       # 最近一次下载结果（仅内存，供队列状态使用）
+_config_lock = threading.RLock()
+_lifecycle_lock = threading.RLock()
+_hosts_lock = threading.RLock()
+_runtime_lock = threading.RLock()
+_library_task_lock = threading.Lock()
+_cooldown_lock = threading.RLock()
+_run_id = 0
+_service_threads = []
+_hosts_restore_pending = False
+_runtime_state = {
+    "running": False, "phase": "stopped", "youtube_available": False,
+    "queue_watcher_available": False, "hosts_restore_pending": False,
+    "warnings": [], "error": None,
+}
 _resolved_ids = {}           # songNum -> filename or None
 _resolved_lock = threading.Lock()
 _mapping = {}                # song_id -> filename（"" 表示非CDN源）
@@ -115,15 +133,27 @@ def wait_rate_limit():
 #          rebuild_progress / rebuild_done / verify_progress / verify_done
 
 _listeners = []
+_listeners_lock = threading.Lock()
 _last_queue_items = []  # 最近一次点歌队列（用于下载完成后刷新队列缓存状态）
+_queue_lock = threading.RLock()
 
 
 def add_listener(fn):
-    _listeners.append(fn)
+    with _listeners_lock:
+        if fn not in _listeners:
+            _listeners.append(fn)
+
+
+def remove_listener(fn):
+    with _listeners_lock:
+        if fn in _listeners:
+            _listeners.remove(fn)
 
 
 def emit(kind, **data):
-    for fn in list(_listeners):
+    with _listeners_lock:
+        listeners = list(_listeners)
+    for fn in listeners:
         try:
             fn(kind, data)
         except Exception:
@@ -141,39 +171,178 @@ def log(msg):
 def load_config():
     global _config
     path = os.path.join(SCRIPT_DIR, "config.json")
+    missing = not os.path.exists(path)
+    warnings = []
+    loaded = {}
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                _config = {**DEFAULT_CONFIG, **json.load(f)}
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("配置文件必须是对象")
+            # 历史配置可能共用目录。保留其身份，启动/清理拒绝执行，供设置页修正。
+            cfg = _validated_config({**DEFAULT_CONFIG, **loaded}, allow_shared_storage=True)
         except Exception as e:
-            log(f"config.json 读取失败，使用默认配置: {e}")
-            _config = dict(DEFAULT_CONFIG)
+            warnings.append(f"config.json 参数无效，已恢复默认参数并保留可读取的保存目录: {e}")
+            preserved = {}
+            if isinstance(loaded, dict):
+                for name in ("cache_dir", "library_dir"):
+                    if isinstance(loaded.get(name), str) and loaded[name].strip():
+                        preserved[name] = loaded[name]
+            cfg = _validated_config({**DEFAULT_CONFIG, **preserved}, allow_shared_storage=True)
     else:
-        _config = dict(DEFAULT_CONFIG)
-        save_config()
-    if not os.path.isabs(_config["cache_dir"]):
-        _config["cache_dir"] = os.path.join(SCRIPT_DIR, _config["cache_dir"])
-    os.makedirs(_config["cache_dir"], exist_ok=True)
-    lib = _config.get("library_dir") or ""
+        cfg = _validated_config(dict(DEFAULT_CONFIG))
+    os.makedirs(cfg["cache_dir"], exist_ok=True)
+    lib = cfg.get("library_dir") or ""
     if lib:
         try:
             os.makedirs(lib, exist_ok=True)
         except Exception as e:
-            log(f"曲库目录不可用: {e}")
-            _config["library_dir"] = ""
+            warnings.append(f"曲库目录不可用，已停用永久保存: {e}")
+            cfg["library_dir"] = ""
+            cfg["youtube_permanent"] = False
+            cfg["cdn_permanent"] = False
+    with _config_lock:
+        _config = cfg
+    if _same_directory(cfg["cache_dir"], cfg.get("library_dir")):
+        warnings.append("缓存目录与永久曲库相同，已禁用服务启动与缓存清理，请在设置中分开保存目录")
+    for warning in warnings:
+        log(warning)
+        emit("warning", message=warning)
+    if warnings:
+        _set_runtime_state(warnings=warnings)
+    if missing:
+        save_config()
+
+
+def _canonical_path(path):
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _same_directory(left, right):
+    if not left or not right:
+        return False
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return _canonical_path(left) == _canonical_path(right)
+
+
+def _validated_config(config, *, allow_shared_storage=False):
+    cfg = copy.deepcopy(config)
+    for name, minimum in (("preload_count", 0), ("max_cache_mb", 100), ("max_parallel", 1)):
+        value = cfg.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{name} 必须是大于等于 {minimum} 的整数")
+    for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent"):
+        if not isinstance(cfg.get(name), bool):
+            raise ValueError(f"{name} 必须是布尔值")
+    for name in ("cache_dir", "library_dir", "preferred_cdn_ip", "cooldown_file"):
+        if not isinstance(cfg.get(name), str):
+            raise ValueError(f"{name} 必须是文本")
+        cfg[name] = cfg[name].strip()
+    if not cfg["cache_dir"]:
+        raise ValueError("缓存目录不能为空")
+    for name in ("cache_dir", "library_dir", "cooldown_file"):
+        if cfg[name]:
+            cfg[name] = os.path.abspath(os.path.join(SCRIPT_DIR, os.path.expanduser(cfg[name])))
+    if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["library_dir"]):
+        raise ValueError("缓存目录与永久曲库不能是同一个目录")
+    ip = cfg["preferred_cdn_ip"]
+    if ip:
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError as e:
+            raise ValueError("优选 CDN IP 必须是有效的公网 IPv4 地址") from e
+        if parsed.version != 4 or not parsed.is_global:
+            raise ValueError("优选 CDN IP 必须是有效的公网 IPv4 地址")
+    if (cfg["youtube_permanent"] or cfg["cdn_permanent"]) and not cfg["library_dir"]:
+        raise ValueError("启用永久保存前，请先设置曲库目录")
+    return cfg
+
+
+def get_config():
+    """返回配置副本。界面通过 update_config 更新，不直接修改全局状态。"""
+    with _config_lock:
+        return copy.deepcopy(_config or _validated_config(dict(DEFAULT_CONFIG)))
+
+
+def _write_config(config):
+    cfg = copy.deepcopy(config)
+    try:
+        cfg["cache_dir"] = os.path.relpath(cfg["cache_dir"], SCRIPT_DIR)
+    except (ValueError, KeyError):
+        pass
+    os.makedirs(SCRIPT_DIR, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="config-", suffix=".tmp", dir=SCRIPT_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, os.path.join(SCRIPT_DIR, "config.json"))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def save_config():
-    cfg = dict(_config)
+    """兼容旧界面；新界面使用会报告失败的 update_config。"""
     try:
-        cfg["cache_dir"] = os.path.relpath(cfg["cache_dir"], SCRIPT_DIR)
-    except ValueError:
-        pass
-    try:
-        with open(os.path.join(SCRIPT_DIR, "config.json"), "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        with _config_lock:
+            _write_config(_config)
+        return True
     except Exception as e:
         log(f"config.json 保存失败: {e}")
+        return False
+
+
+def update_config(patch):
+    """验证整份配置并原子保存；失败时不修改内存或原配置文件。"""
+    global _config
+    if not isinstance(patch, dict):
+        raise ValueError("配置更新必须是对象")
+    unknown = set(patch) - set(DEFAULT_CONFIG)
+    if unknown:
+        raise ValueError("未知配置项: " + ", ".join(sorted(unknown)))
+    with _lifecycle_lock, _config_lock, _downloads_lock, _cooldown_lock:
+        previous = get_config()
+        cfg = _validated_config({**previous, **copy.deepcopy(patch)})
+        changed = [name for name in patch if previous.get(name) != cfg[name]]
+        if not changed:
+            return {"restart_required": False, "changed": []}
+        paths_changed = bool({"cache_dir", "library_dir"} & set(changed))
+        busy = bool(_downloads_in_progress) or rebuilding() or verifying()
+        if paths_changed and (_running or busy):
+            raise ValueError("请先停止服务并等待下载或曲库任务结束，再修改保存目录")
+        if "enable_youtube_cache" in changed and (_running or busy):
+            raise ValueError("请先停止服务并等待后台任务结束，再修改 YouTube 缓存开关")
+        if "cooldown_file" in changed and cooldown_active():
+            raise ValueError("请先取消 Cool Down，再更换放松视频")
+        if cfg["cooldown_file"] and "cooldown_file" in changed:
+            if not os.path.isfile(cfg["cooldown_file"]) or os.path.getsize(cfg["cooldown_file"]) == 0:
+                raise ValueError("放松视频不存在或为空文件")
+        for name in ("cache_dir", "library_dir"):
+            if cfg[name]:
+                os.makedirs(cfg[name], exist_ok=True)
+        _write_config(cfg)
+        _config = cfg
+    emit("config", changed=changed, restart_required=False)
+    emit_stats()
+    refresh_queue_state()
+    return {"restart_required": False, "changed": changed}
+
+
+def get_runtime_state():
+    with _runtime_lock:
+        return copy.deepcopy(_runtime_state)
+
+
+def _set_runtime_state(**changes):
+    with _runtime_lock:
+        _runtime_state.update(changes)
+        snapshot = copy.deepcopy(_runtime_state)
+    emit("state", **snapshot)
 
 
 def cache_path(filename):
@@ -198,7 +367,9 @@ def load_mapping():
     except FileNotFoundError:
         pass
     except Exception as e:
-        log(f"mapping.json 读取失败: {e}")
+        message = f"mapping.json 读取失败: {e}"
+        log(message)
+        emit("warning", message=message)
 
 
 def mark_mapping(song_id, filename):
@@ -242,11 +413,18 @@ def library_path(song_id):
     return os.path.join(_config["library_dir"], f"{song_id}.mp4")
 
 
+def _nonempty_file(path):
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
 def in_library(song_id):
     if not library_enabled():
         return False
     p = library_path(song_id)
-    return os.path.exists(p) and os.path.getsize(p) > 0
+    return _nonempty_file(p)
 
 
 def local_path_for(filename):
@@ -255,13 +433,13 @@ def local_path_for(filename):
     if m:
         return yt_local_path(int(m.group(1)))
     p = cache_path(filename)
-    if os.path.exists(p) and os.path.getsize(p) > 0:
+    if _nonempty_file(p):
         return p
     with _mapping_lock:
         sid = _reverse_mapping.get(filename)
     if sid is not None and library_enabled():
         p = library_path(sid)
-        if os.path.exists(p) and os.path.getsize(p) > 0:
+        if _nonempty_file(p):
             return p
     return None
 
@@ -303,10 +481,10 @@ def yt_local_path(song_id):
     if in_library(song_id):
         return library_path(song_id)
     p = os.path.join(_config["cache_dir"], "yt", f"{song_id}.mp4")
-    if os.path.exists(p) and os.path.getsize(p) > 0:
+    if _nonempty_file(p):
         return p
     p = cache_path(f"yt_{song_id}.mp4")
-    if os.path.exists(p) and os.path.getsize(p) > 0:
+    if _nonempty_file(p):
         return p
     return None
 
@@ -381,19 +559,39 @@ def emit_stats():
 
 
 def clear_cache():
-    removed = 0
+    """只清理临时缓存，保护在途目标和 .part，并报告实际结果。"""
+    result = {"removed_count": 0, "removed_bytes": 0, "skipped_busy": 0,
+              "failed_count": 0, "errors": []}
     with _downloads_lock:
-        busy = set(_downloads_in_progress)
-    for name in os.listdir(_config["cache_dir"]):
-        p = os.path.join(_config["cache_dir"], name)
-        if name.endswith((".mp4", ".part")) and os.path.isfile(p) and p not in busy:
+        directory = _config["cache_dir"]
+        if _same_directory(directory, _config.get("library_dir")):
+            raise ValueError("缓存目录与永久曲库相同，已拒绝清理以保护曲库")
+        try:
+            names = os.listdir(directory)
+        except FileNotFoundError:
+            names = []
+        for name in names:
+            path = os.path.join(directory, name)
+            if not name.endswith((".mp4", ".part")) or not os.path.isfile(path):
+                continue
+            target = path[:-5] if path.endswith(".part") else path
+            if _canonical_path(target) in _downloads_in_progress:
+                result["skipped_busy"] += 1
+                continue
             try:
-                os.remove(p)
-                removed += 1
-            except Exception:
-                pass
-    log(f"已清空缓存目录，删除 {removed} 个文件（曲库目录不受影响）")
+                size = os.path.getsize(path)
+                os.remove(path)
+                result["removed_count"] += 1
+                result["removed_bytes"] += size
+            except OSError as e:
+                result["failed_count"] += 1
+                result["errors"].append({"filename": name, "error": str(e)})
+    log(f"缓存清理完成：删除 {result['removed_count']} 个，正在下载跳过 {result['skipped_busy']} 个，"
+        f"失败 {result['failed_count']} 个（永久曲库保留）")
     emit_stats()
+    refresh_queue_state()
+    emit("cache_cleared", **result)
+    return result
 
 
 # ---------------- 管理员权限 ----------------
@@ -423,14 +621,16 @@ def ensure_admin():
 # ---------------- DNS 解析（劫持前取真实 IP） ----------------
 
 def resolve_real_ips():
+    _origin_ips.clear()
     for host in HIJACK_HOSTS:
         ips = []
         try:
             _, _, ips = __import__("socket").gethostbyname_ex(host)
         except Exception:
             pass
+        ips = [ip for ip in ips if _is_public_ip(ip)]
         if not ips:
-            ips = doh_lookup(host)
+            ips = [ip for ip in doh_lookup(host) if _is_public_ip(ip)]
         if ips:
             _origin_ips[host] = ips
             log(f"解析 {host} -> {', '.join(ips)}")
@@ -512,33 +712,35 @@ def _hosts_error_reason(e):
 
 
 def clean_stale_hosts():
-    try:
-        with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        kept = [l for l in lines if HOSTS_MARK not in l]
-        if len(kept) != len(lines):
-            with open(HOSTS_PATH, "w", encoding="utf-8") as f:
-                f.writelines(kept)
-            log("已清理上次残留的 hosts 记录")
-    except FileNotFoundError:
-        pass
-    except PermissionError as e:
-        log(f"错误: hosts 修改失败（{_hosts_error_reason(e)}）")
-        raise
+    with _hosts_lock:
+        try:
+            with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            kept = [l for l in lines if HOSTS_MARK not in l]
+            if len(kept) != len(lines):
+                with open(HOSTS_PATH, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
+                log("已清理上次残留的 hosts 记录")
+        except FileNotFoundError:
+            pass
+        except PermissionError as e:
+            log(f"错误: hosts 修改失败（{_hosts_error_reason(e)}）")
+            raise
 
 
 def hijack_hosts(include_api=False):
-    clean_stale_hosts()
-    with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
-    with open(HOSTS_PATH + ".dance-cache.bak", "w", encoding="utf-8") as f:
-        f.write(content)
-    hosts = CDN_HOSTS + ([API_HOST] if include_api else [])
-    with open(HOSTS_PATH, "a", encoding="utf-8") as f:
-        if not content.endswith("\n"):
-            f.write("\n")
-        for host in hosts:
-            f.write(f"127.0.0.1 {host} {HOSTS_MARK}\n")
+    with _hosts_lock:
+        clean_stale_hosts()
+        with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        with open(HOSTS_PATH + ".dance-cache.bak", "w", encoding="utf-8") as f:
+            f.write(content)
+        hosts = CDN_HOSTS + ([API_HOST] if include_api else [])
+        with open(HOSTS_PATH, "a", encoding="utf-8") as f:
+            if not content.endswith("\n"):
+                f.write("\n")
+            for host in hosts:
+                f.write(f"127.0.0.1 {host} {HOSTS_MARK}\n")
     log("hosts 已劫持: " + ", ".join(hosts))
 
 
@@ -546,8 +748,10 @@ def restore_hosts():
     try:
         clean_stale_hosts()
         log("hosts 已恢复")
-    except PermissionError:
-        pass
+        return True
+    except OSError as e:
+        log(f"hosts 恢复失败: {e}")
+        return False
 
 
 def _hosts_watchdog_loop(include_api):
@@ -555,19 +759,25 @@ def _hosts_watchdog_loop(include_api):
     expected = CDN_HOSTS + ([API_HOST] if include_api else [])
     while not _stop_event.wait(15):
         try:
-            with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            marked = [l for l in lines if HOSTS_MARK in l]
-            missing = [h for h in expected if not any(h in l for l in marked)]
-            if not missing:
-                continue
-            kept = [l for l in lines if HOSTS_MARK not in l]
-            if kept and not kept[-1].endswith("\n"):
-                kept[-1] += "\n"
-            for h in expected:
-                kept.append(f"127.0.0.1 {h} {HOSTS_MARK}\n")
-            with open(HOSTS_PATH, "w", encoding="utf-8") as f:
-                f.writelines(kept)
+            # 与最终恢复串行，防止停止期间在恢复后重新写回劫持条目。
+            with _hosts_lock:
+                if _stop_event.is_set():
+                    return
+                with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                marked = [l for l in lines if HOSTS_MARK in l]
+                missing = [h for h in expected if not any(h in l for l in marked)]
+                if not missing:
+                    continue
+                kept = [l for l in lines if HOSTS_MARK not in l]
+                if kept and not kept[-1].endswith("\n"):
+                    kept[-1] += "\n"
+                for h in expected:
+                    kept.append(f"127.0.0.1 {h} {HOSTS_MARK}\n")
+                if _stop_event.is_set():
+                    return
+                with open(HOSTS_PATH, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
             log(f"检测到 hosts 条目被清除（可能是加速器恢复备份），已自动重新写入: {', '.join(missing)}")
         except PermissionError as e:
             log(f"hosts 自动重写失败（{_hosts_error_reason(e)}）")
@@ -796,11 +1006,87 @@ def resolve_video_filename(song_num):
 _progress_last = {}
 
 
-def emit_progress(filename, done, total):
+def emit_progress(filename, done, total, task_id=None):
     now = time.time()
-    if (total > 0 and done >= total) or now - _progress_last.get(filename, 0) >= 0.5:
-        _progress_last[filename] = now
-        emit("progress", filename=filename, done=done, total=total)
+    key = task_id or filename
+    with _downloads_lock:
+        meta = _download_meta.get(task_id)
+        if meta is not None:
+            meta.update(done=done, total=total)
+        data = dict(meta or {"filename": filename, "task_id": task_id})
+        should_emit = (total > 0 and done >= total) or now - _progress_last.get(key, 0) >= 0.5
+        if should_emit:
+            _progress_last[key] = now
+    if should_emit:
+        data.update(filename=filename, done=done, total=total)
+        emit("progress", **data)
+
+
+def _cancelled(run_id):
+    return _stop_event.is_set() or run_id != _run_id
+
+
+def _begin_download(target, filename, song_id=None, source="cdn"):
+    key = _canonical_path(target)
+    if song_id is None:
+        with _mapping_lock:
+            song_id = _reverse_mapping.get(filename)
+    meta = {
+        "task_id": key, "filename": filename, "song_id": song_id,
+        "source": source, "target_path": target,
+        "storage": "library" if _same_directory(os.path.dirname(target), _config.get("library_dir")) else "cache",
+        "done": 0, "total": 0,
+    }
+    with _downloads_lock:
+        if _stop_event.is_set() or key in _downloads_in_progress:
+            return None
+        _downloads_in_progress[key] = threading.current_thread()
+        _download_meta[key] = dict(meta)
+        _download_results.pop(key, None)
+    emit("download_start", **meta)
+    refresh_queue_state()
+    return meta
+
+
+def get_downloads_snapshot():
+    with _downloads_lock:
+        return copy.deepcopy(list(_download_meta.values()))
+
+
+def _finish_download(meta, ok, cancelled, error, done, total):
+    data = {**meta, "ok": bool(ok), "cancelled": bool(cancelled),
+            "error": error, "done": done, "total": total}
+    key = meta["task_id"]
+    with _downloads_lock:
+        _downloads_in_progress.pop(key, None)
+        _download_meta.pop(key, None)
+        _progress_last.pop(key, None)
+        _download_results[key] = dict(data)
+        while len(_download_results) > 200:
+            _download_results.pop(next(iter(_download_results)))
+    cleanup_cache()
+    emit("download_done", **data)
+    emit_stats()
+
+
+def _commit_download(part, target, size):
+    try:
+        os.replace(part, target)
+    except OSError:
+        # Windows 播放器可能持有已有完整文件；不能把不存在的目标当作成功。
+        if not os.path.isfile(target) or os.path.getsize(target) != size:
+            raise
+        log(f"写入 {os.path.basename(target)} 时文件被占用，使用已有同大小文件")
+        os.remove(part)
+
+
+def _remove_part(part):
+    try:
+        os.remove(part)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log(f"无法删除临时文件 {os.path.basename(part)}: {e}")
 
 
 def touch(path):
@@ -811,69 +1097,55 @@ def touch(path):
 
 
 def download_file(filename, song_id=None):
-    """完整下载（.part -> 重命名）。曲库模式下按编号命名保存。已存在或进行中则跳过。"""
+    """完整下载；只有正常读至 EOF 且长度匹配才发布成功。"""
     target = target_path(filename, song_id)
-    if os.path.exists(target) and os.path.getsize(target) > 0:
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
         return True
-    with _downloads_lock:
-        if target in _downloads_in_progress:
-            return False
-        _downloads_in_progress[target] = threading.current_thread()
-    emit("download_start", filename=filename)
+    run_id = _run_id
+    meta = _begin_download(target, filename, song_id)
+    if meta is None:
+        return False
     part = target + ".part"
     ok = False
+    error = None
+    done = total = 0
+    conn = None
+    eof = False
     try:
         conn, resp = open_upstream("cdn.pypy.dance", "/" + filename)
         if resp.status != 200:
-            log(f"下载 {filename} 失败: HTTP {resp.status}")
-            resp.read()
-            conn.close()
-            return False
+            raise RuntimeError(f"HTTP {resp.status}")
         total = int(resp.getheader("Content-Length") or 0)
-        done = 0
         with open(part, "wb") as f:
-            while not _stop_event.is_set():
+            while not _cancelled(run_id):
                 chunk = resp.read(256 * 1024)
                 if not chunk:
+                    eof = True
                     break
                 f.write(chunk)
                 done += len(chunk)
-                emit_progress(filename, done, total)
-        conn.close()
-        if done > 0 and (total == 0 or done == total):
-            try:
-                if os.path.exists(target):
-                    os.remove(target)
-                os.rename(part, target)
-                log(f"缓存完成 {os.path.basename(target)} ({done / 1048576:.1f} MB)")
-                ok = os.path.exists(target)
-                return True
-            except OSError:
-                # 目标文件正被播放器占用：保留已有完整文件即可
-                log(f"写入 {os.path.basename(target)} 时文件被占用，使用已有文件")
-                try:
-                    os.remove(part)
-                except OSError:
-                    pass
-                ok = os.path.exists(target)
-                return ok
-        else:
-            log(f"下载不完整 {filename} ({done}/{total})，保留 .part 待重试")
-            return False
+                emit_progress(filename, done, total, meta["task_id"])
+        if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
+            _commit_download(part, target, done)
+            ok = True
+            log(f"缓存完成 {os.path.basename(target)} ({done / 1048576:.1f} MB)")
+        elif not _cancelled(run_id):
+            error = f"下载不完整 ({done}/{total})"
+            log(f"{filename}: {error}")
     except Exception as e:
+        error = str(e)
         log(f"下载 {filename} 出错: {e}")
-        try:
-            if os.path.exists(part):
-                os.remove(part)
-        except Exception:
-            pass
-        return False
     finally:
-        with _downloads_lock:
-            _downloads_in_progress.pop(target, None)
-        emit("download_done", filename=filename, ok=ok)
-        cleanup_cache()
-        emit_stats()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        cancelled = not ok and _cancelled(run_id)
+        if not ok:
+            _remove_part(part)
+        _finish_download(meta, ok, cancelled, None if cancelled else error, done, total)
+    return ok
 
 
 def start_background_download(filename, song_id=None):
@@ -883,7 +1155,7 @@ def start_background_download(filename, song_id=None):
     if os.path.exists(target) and os.path.getsize(target) > 0:
         return
     with _downloads_lock:
-        if target in _downloads_in_progress:
+        if _canonical_path(target) in _downloads_in_progress:
             return
     threading.Thread(target=download_file, args=(filename, song_id), daemon=True).start()
 
@@ -910,60 +1182,52 @@ def scan_resolved_youtube(lines):
 
 
 def download_googlevideo(song_id, url):
-    """下载 VRChat 播放中的 googlevideo 直链：曲库模式存 {id}.mp4，否则存缓存 yt_{id}.mp4"""
+    """保存播放中捕获的直链；取消或不完整时不会冒充可用本地视频。"""
     target = yt_target_path(song_id)
-    if os.path.exists(target) and os.path.getsize(target) > 0:
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
         return True
-    with _downloads_lock:
-        if target in _downloads_in_progress:
-            return False
-        _downloads_in_progress[target] = threading.current_thread()
+    run_id = _run_id
     name = os.path.basename(target)
-    emit("download_start", filename=name)
-    ok = False
+    meta = _begin_download(target, name, song_id, "youtube")
+    if meta is None:
+        return False
     part = target + ".part"
+    ok = False
+    error = None
+    done = total = 0
+    eof = False
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         log(f"捕获到播放中的 YouTube 源 id={song_id}，开始录制...")
         with urllib.request.urlopen(req, timeout=30) as r:
+            status = getattr(r, "status", 200)
+            if status != 200:
+                raise RuntimeError(f"HTTP {status}")
             total = int(r.headers.get("Content-Length") or 0)
-            done = 0
             with open(part, "wb") as f:
-                while not _stop_event.is_set():
+                while not _cancelled(run_id):
                     chunk = r.read(256 * 1024)
                     if not chunk:
+                        eof = True
                         break
                     f.write(chunk)
                     done += len(chunk)
-                    emit_progress(name, done, total)
-        if done > 0 and (total == 0 or done == total):
-            try:
-                if os.path.exists(target):
-                    os.remove(target)
-                os.rename(part, target)
-                log(f"YouTube 源录制完成 {name} ({done / 1048576:.1f} MB)")
-                ok = True
-            except OSError:
-                log(f"写入 {name} 时文件被占用，使用已有文件")
-                try:
-                    os.remove(part)
-                except OSError:
-                    pass
-                ok = os.path.exists(target)
-        else:
-            log(f"YouTube 源录制不完整 id={song_id} ({done}/{total})，下次播放时重试")
+                    emit_progress(name, done, total, meta["task_id"])
+        if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
+            _commit_download(part, target, done)
+            ok = True
+            log(f"YouTube 源录制完成 {name} ({done / 1048576:.1f} MB)")
+        elif not _cancelled(run_id):
+            error = f"录制不完整 ({done}/{total})，下次播放时重试"
+            log(f"YouTube 源 id={song_id}: {error}")
     except Exception as e:
+        error = str(e)
         log(f"YouTube 源录制失败 id={song_id}: {e}")
     finally:
-        try:
-            if not ok and os.path.exists(part):
-                os.remove(part)
-        except Exception:
-            pass
-        with _downloads_lock:
-            _downloads_in_progress.pop(target, None)
-        emit("download_done", filename=name, ok=ok)
-        emit_stats()
+        cancelled = not ok and _cancelled(run_id)
+        if not ok:
+            _remove_part(part)
+        _finish_download(meta, ok, cancelled, None if cancelled else error, done, total)
     return ok
 
 
@@ -972,7 +1236,7 @@ def start_googlevideo_download(song_id, url):
         return
     target = yt_target_path(song_id)
     with _downloads_lock:
-        if target in _downloads_in_progress:
+        if _canonical_path(target) in _downloads_in_progress:
             return
     threading.Thread(target=download_googlevideo, args=(song_id, url), daemon=True).start()
 
@@ -980,34 +1244,34 @@ def start_googlevideo_download(song_id, url):
 # ---------------- 缓存目录清理 (LRU，曲库目录不清理) ----------------
 
 def cleanup_cache():
-    try:
-        limit = int(_config["max_cache_mb"]) * 1048576
-        files = []
-        total = 0
-        for name in os.listdir(_config["cache_dir"]):
-            p = os.path.join(_config["cache_dir"], name)
-            if name.endswith(".mp4") and os.path.isfile(p):
-                st = os.stat(p)
-                files.append((st.st_mtime, st.st_size, p))
-                total += st.st_size
-        if total <= limit:
-            return
-        files.sort()
-        for _, size, p in files:
-            if total <= limit:
-                break
-            with _downloads_lock:
-                busy = p in _downloads_in_progress
-            if busy:
-                continue
-            try:
-                os.remove(p)
-                total -= size
-                log(f"缓存超限，清理 {os.path.basename(p)}")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # 与登记下载/手工清理共用锁，避免检查 busy 后又有新任务开始写入。
+    with _downloads_lock:
+        try:
+            directory = _config["cache_dir"]
+            if _same_directory(directory, _config.get("library_dir")):
+                return
+            limit = int(_config["max_cache_mb"]) * 1048576
+            files = []
+            total = 0
+            for name in os.listdir(directory):
+                path = os.path.join(directory, name)
+                if name.endswith(".mp4") and os.path.isfile(path):
+                    st = os.stat(path)
+                    files.append((st.st_mtime, st.st_size, path))
+                    total += st.st_size
+            for _, size, path in sorted(files):
+                if total <= limit:
+                    break
+                if _canonical_path(path) in _downloads_in_progress:
+                    continue
+                try:
+                    os.remove(path)
+                    total -= size
+                    log(f"缓存超限，清理 {os.path.basename(path)}")
+                except OSError:
+                    pass
+        except (OSError, KeyError, ValueError):
+            pass
 
 
 # ---------------- 曲库任务取消（重建映射/校验共用） ----------------
@@ -1021,18 +1285,31 @@ def cancel_library_download():
 _rebuild_thread = None
 
 
-def rebuild_mapping():
-    """扫描曲库目录中的 {id}.mp4，联网解析 id->文件名 映射（播放匹配依赖此表）"""
-    global _rebuild_thread
-    if not library_enabled():
-        log("未设置曲库目录，无法重建映射")
-        return False
-    if _rebuild_thread and _rebuild_thread.is_alive():
-        log("映射重建已在进行中")
-        return False
-    _rebuild_thread = threading.Thread(target=_rebuild_worker, daemon=True)
-    _rebuild_thread.start()
+def _start_library_task(kind, worker):
+    global _rebuild_thread, _verify_thread
+    with _lifecycle_lock, _config_lock, _library_task_lock:
+        if not library_enabled():
+            log("请先设置有效的曲库目录")
+            return False
+        if rebuilding() or verifying():
+            log("已有曲库任务正在进行，请等待完成或取消后再试")
+            return False
+        if _stop_event.is_set():
+            log("服务已停止，请重新启动服务后再运行曲库任务")
+            return False
+        _library_stop.clear()
+        thread = threading.Thread(target=worker, daemon=True)
+        if kind == "rebuild":
+            _rebuild_thread = thread
+        else:
+            _verify_thread = thread
+        thread.start()
     return True
+
+
+def rebuild_mapping():
+    """只补全本地曲库缺少的映射；与校验任务互斥。"""
+    return _start_library_task("rebuild", _rebuild_worker)
 
 
 def rebuilding():
@@ -1045,17 +1322,8 @@ _verify_thread = None
 
 
 def verify_library():
-    """逐一对比曲库文件与远端大小，不一致的重新下载"""
-    global _verify_thread
-    if not library_enabled():
-        log("未设置曲库目录，无法校验")
-        return False
-    if _verify_thread and _verify_thread.is_alive():
-        log("曲库校验已在进行中")
-        return False
-    _verify_thread = threading.Thread(target=_verify_worker, daemon=True)
-    _verify_thread.start()
-    return True
+    """对比远端文件大小，仅报告不一致，不自动删除或重新下载。"""
+    return _start_library_task("verify", _verify_worker)
 
 
 def verifying():
@@ -1063,17 +1331,18 @@ def verifying():
 
 
 def _remote_size(filename):
-    """用 Range: bytes=0-0 取远端文件总大小，不下载内容"""
-    conn, resp = open_upstream("cdn.pypy.dance", "/" + filename, extra_headers={"Range": "bytes=0-0"}, retries=2)
+    conn, resp = open_upstream("cdn.pypy.dance", "/" + filename,
+                               extra_headers={"Range": "bytes=0-0"}, retries=2)
     try:
-        cr = resp.getheader("Content-Range") or ""
         if resp.status == 200:
-            cl = resp.getheader("Content-Length")
-            return int(cl) if cl else None
-        m = re.search(r"/(\d+)\s*$", cr)
-        return int(m.group(1)) if m else None
+            value = resp.getheader("Content-Length")
+            return int(value) if value else None
+        if resp.status != 206:
+            return None
+        match = re.search(r"/(\d+)\s*$", resp.getheader("Content-Range") or "")
+        return int(match.group(1)) if match else None
     finally:
-        resp.read()
+        # 服务器忽略 Range 时不要为校验而读取整个视频。
         conn.close()
 
 
@@ -1081,15 +1350,13 @@ def _verify_worker():
     checked = bad = failed = skipped = 0
     bad_ids = []
     total = 0
+    error = None
     try:
-        ids = []
-        for name in os.listdir(_config["library_dir"]):
-            m = re.match(r"^(\d+)\.mp4$", name)
-            if m:
-                ids.append(int(m.group(1)))
-        ids = sorted(set(ids))
+        directory = _config["library_dir"]
+        ids = sorted({int(name[:-4]) for name in os.listdir(directory)
+                      if re.fullmatch(r"\d+\.mp4", name)})
         total = len(ids)
-        log(f"开始校验曲库完整性，共 {total} 个文件...")
+        log(f"开始校验曲库文件大小，共 {total} 个文件...")
         emit("verify_progress", checked=0, bad=0, failed=0, skipped=0, total=total, current="")
         lock = threading.Lock()
 
@@ -1097,74 +1364,61 @@ def _verify_worker():
             nonlocal checked, bad, failed, skipped
             if _library_stop.is_set() or _stop_event.is_set():
                 return
-            wait_rate_limit()
-            fn = resolve_video_filename(sid)
-            if not fn:
-                with lock:
-                    skipped += 1
-                    checked += 1
+            filename = resolve_video_filename(sid)
+            if _library_stop.is_set() or _stop_event.is_set():
                 return
-            path = library_path(sid)
-            try:
-                local_size = os.path.getsize(path)
-                remote_size = _remote_size(fn)
-            except Exception:
-                remote_size = None
+            problem = None
+            is_youtube = song_route(sid)[0] == "yt"
+            if filename:
                 try:
-                    local_size = os.path.getsize(path)
-                except OSError:
-                    local_size = -1
+                    local_size = os.path.getsize(os.path.join(directory, f"{sid}.mp4"))
+                    remote_size = _remote_size(filename)
+                    if remote_size is None:
+                        problem = "failed"
+                    elif local_size != remote_size:
+                        problem = "bad"
+                        log(f"校验不一致 {sid}.mp4: 本地 {local_size} / 远端 {remote_size}（仅报告，未修改文件）")
+                except Exception:
+                    problem = "failed"
+            else:
+                problem = "skipped" if is_youtube else "failed"
             with lock:
                 checked += 1
-                if remote_size is None:
-                    failed += 1
-                elif local_size != remote_size:
+                if problem == "bad":
                     bad += 1
-            if remote_size is not None and local_size != remote_size:
-                # 只报告不修复：避免被利用来反复批量回源
-                log(f"校验不一致 {sid}.mp4: 本地 {local_size} / 远端 {remote_size}"
-                    "（可手动删除该文件，下次播放时会自动重新缓存）")
-                with lock:
                     bad_ids.append(sid)
-            with lock:
-                cur = checked
-                emit("verify_progress", checked=cur, bad=bad, failed=failed, skipped=skipped,
-                     total=total, current=str(sid))
-                if cur % 10 == 0:
-                    flush_mapping()
+                elif problem == "failed":
+                    failed += 1
+                elif problem == "skipped":
+                    skipped += 1
+                progress = dict(checked=checked, bad=bad, failed=failed, skipped=skipped,
+                                total=total, current=str(sid))
+            emit("verify_progress", **progress)
 
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            list(ex.map(work, ids))
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(work, ids))
         flush_mapping()
-        cancelled = _library_stop.is_set() or _stop_event.is_set()
-        log(("曲库校验已取消。" if cancelled else "曲库校验完成。")
-            + f" 共 {total} 个，不一致 {bad} 个，无法校验(YouTube源) {skipped} 个，失败 {failed} 个")
-        if bad_ids:
-            log(f"不一致的编号: {', '.join(map(str, bad_ids))}（手动删除对应文件后，播放时会自动重新缓存）")
-        emit("verify_done", total=total, bad=bad, skipped=skipped, failed=failed, cancelled=cancelled)
-        emit_stats()
     except Exception as e:
+        error = str(e)
         log(f"曲库校验出错: {e}")
-        emit("verify_done", total=total, bad=bad, skipped=skipped, failed=failed, cancelled=True)
+    cancelled = _library_stop.is_set() or _stop_event.is_set()
+    log(("曲库校验已取消。" if cancelled else "曲库校验完成。")
+        + f"已检查 {checked}/{total}，不一致 {bad}，YouTube 跳过 {skipped}，失败 {failed}")
+    emit("verify_done", total=total, checked=checked, bad=bad, skipped=skipped, failed=failed,
+         bad_ids=sorted(bad_ids), cancelled=cancelled, error=error)
+    emit_stats()
 
 
 def _rebuild_worker():
-    done = failed = 0
-    total = 0
+    done = failed = total = 0
+    error = None
     try:
-        ids = []
-        for name in os.listdir(_config["library_dir"]):
-            m = re.match(r"^(\d+)\.mp4$", name)
-            if m:
-                ids.append(int(m.group(1)))
+        ids = sorted({int(name[:-4]) for name in os.listdir(_config["library_dir"])
+                      if re.fullmatch(r"\d+\.mp4", name)})
         with _mapping_lock:
-            # 旧版本标记的 ""（非CDN源）也重新解析，以便学习 YouTube 源地址
-            todo = [i for i in sorted(set(ids)) if not _mapping.get(i)]
+            todo = [sid for sid in ids if not _mapping.get(sid)]
         total = len(todo)
-        log(f"曲库共 {len(ids)} 个视频，其中 {total} 个需要重建映射（已有映射的自动跳过）")
-        if total == 0:
-            emit("rebuild_done", done=0, failed=0, total=0)
-            return
+        log(f"曲库共 {len(ids)} 个视频，其中 {total} 个需要补全映射")
         emit("rebuild_progress", done=0, failed=0, total=total, current="")
         lock = threading.Lock()
 
@@ -1172,30 +1426,26 @@ def _rebuild_worker():
             nonlocal done, failed
             if _library_stop.is_set() or _stop_event.is_set():
                 return
-            wait_rate_limit()
-            _stop_event.wait(0.05)  # 轻节流；解析是小请求，配合429退避即可
+            resolve_video_filename(sid)
             if _library_stop.is_set() or _stop_event.is_set():
                 return
-            fn = resolve_video_filename(sid)
+            known = song_route(sid)[0] in ("cdn", "yt")
             with lock:
-                if fn:
-                    done += 1
-                else:
-                    failed += 1
-                cur = done + failed
-                emit("rebuild_progress", done=done, failed=failed, total=total, current=str(sid))
-                if cur % 10 == 0 or cur == total:
-                    flush_mapping()
+                done += int(known)
+                failed += int(not known)
+                progress = dict(done=done, failed=failed, total=total, current=str(sid))
+            emit("rebuild_progress", **progress)
 
-        with ThreadPoolExecutor(max_workers=16) as ex:
-            list(ex.map(work, todo))
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            list(executor.map(work, todo))
         flush_mapping()
-        cancelled = _library_stop.is_set() or _stop_event.is_set()
-        log(("映射重建已取消。" if cancelled else "映射重建完成。") + f" 成功 {done}，失败/非CDN源 {failed}")
-        emit("rebuild_done", done=done, failed=failed, total=total)
     except Exception as e:
+        error = str(e)
         log(f"映射重建出错: {e}")
-        emit("rebuild_done", done=done, failed=failed, total=total)
+    cancelled = _library_stop.is_set() or _stop_event.is_set()
+    log(("映射重建已取消。" if cancelled else "映射重建完成。") + f" 成功 {done}，失败 {failed}")
+    emit("rebuild_done", done=done, failed=failed, total=total, cancelled=cancelled, error=error)
+    refresh_queue_state()
 
 
 # ---------------- CDN IP 测速 ----------------
@@ -1488,113 +1738,89 @@ class DanceHandler(BaseHTTPRequestHandler):
 
     def _proxy(self, head_only=False):
         name = self._filename()
+        run_id = _run_id
         range_header = self.headers.get("Range")
-        extra = {}
-        if range_header:
-            extra["Range"] = range_header
+        extra = {"Range": range_header} if range_header else None
+        conn = None
+        meta = None
+        part = None
+        ok = False
+        saved = total = 0
+        error = None
         try:
-            conn, resp = open_upstream("cdn.pypy.dance", "/" + name, extra_headers=extra or None)
-        except Exception as e:
-            log(f"回源失败 {name}: {e}")
-            try:
-                self.send_error(502, f"upstream error: {e}")
-            except Exception:
-                pass
-            return
-        try:
+            conn, resp = open_upstream("cdn.pypy.dance", "/" + name, extra_headers=extra)
+            if _cancelled(run_id):
+                return
             self.send_response(resp.status)
-            for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"):
-                v = resp.getheader(h)
-                if v is not None:
-                    self.send_header(h, v)
+            for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"):
+                value = resp.getheader(header)
+                if value is not None:
+                    self.send_header(header, value)
             if resp.getheader("Accept-Ranges") is None:
                 self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
             if head_only:
-                resp.read()
                 return
-            if range_header:
-                # 客户端要的是片段：透传，同时后台补齐完整文件
+
+            # 错误正文与服务器未按完整请求返回的片段只透传，绝不登记为缓存。
+            if range_header and resp.status in (200, 206):
                 start_background_download(name)
-                while True:
+            elif not range_header and resp.status == 200:
+                target = target_path(name)
+                total = int(resp.getheader("Content-Length") or 0)
+                meta = _begin_download(target, name)
+            if meta is None:
+                while not _cancelled(run_id):
                     chunk = resp.read(256 * 1024)
                     if not chunk:
                         break
-                    try:
-                        self.wfile.write(chunk)
-                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    self.wfile.write(chunk)
+                return
+
+            part = target + ".part"
+            client_alive = True
+            eof = False
+            with open(part, "wb") as f:
+                while not _cancelled(run_id):
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        eof = True
                         break
-            else:
-                # 完整请求：边下边存（曲库模式下按编号入库）
-                target = target_path(name)
-                with _downloads_lock:
-                    already = target in _downloads_in_progress
-                    if not already:
-                        _downloads_in_progress[target] = threading.current_thread()
-                if already:
-                    # 同一文件已有下载在进行，本次只透传不写缓存，避免并发写同一文件
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
+                    f.write(chunk)
+                    saved += len(chunk)
+                    emit_progress(name, saved, total, meta["task_id"])
+                    if client_alive:
                         try:
                             self.wfile.write(chunk)
                         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                            break
-                    return
-                try:
-                    part = target + ".part"
-                    client_alive = True
-                    saved = 0
-                    total = int(resp.getheader("Content-Length") or 0)
-                    emit("download_start", filename=name)
-                    with open(part, "wb") as f:
-                        while True:
-                            chunk = resp.read(256 * 1024)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            saved += len(chunk)
-                            emit_progress(name, saved, total)
-                            if client_alive:
-                                try:
-                                    self.wfile.write(chunk)
-                                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                                    client_alive = False
-                    if saved > 0 and (total == 0 or saved == total):
-                        try:
-                            if os.path.exists(target):
-                                os.remove(target)
-                            os.rename(part, target)
-                            log(f"边下边存完成 {os.path.basename(target)} ({saved / 1048576:.1f} MB)")
-                            emit("download_done", filename=name, ok=True)
-                            emit_stats()
-                        except OSError as e:
-                            # 目标文件正被播放器占用：保留已有完整文件即可
-                            log(f"写入 {os.path.basename(target)} 时文件被占用，使用已有文件")
-                            try:
-                                os.remove(part)
-                            except OSError:
-                                pass
-                            emit("download_done", filename=name, ok=os.path.exists(target))
-                    else:
-                        try:
-                            os.remove(part)
-                        except Exception:
-                            pass
-                        emit("download_done", filename=name, ok=False)
-                finally:
-                    with _downloads_lock:
-                        _downloads_in_progress.pop(target, None)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
+                            client_alive = False
+            if not _cancelled(run_id) and eof and saved > 0 and (total == 0 or saved == total):
+                _commit_download(part, target, saved)
+                ok = True
+                log(f"边下边存完成 {os.path.basename(target)} ({saved / 1048576:.1f} MB)")
+            elif not _cancelled(run_id):
+                error = f"下载不完整 ({saved}/{total})"
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            error = str(e) or "连接已中断"
         except Exception as e:
+            error = str(e)
             log(f"代理 {name} 出错: {e}")
+            if conn is None:
+                try:
+                    self.send_error(502, "upstream unavailable")
+                except Exception:
+                    pass
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if meta is not None:
+                cancelled = not ok and _cancelled(run_id)
+                if not ok and part:
+                    _remove_part(part)
+                _finish_download(meta, ok, cancelled, None if cancelled else error, saved, total)
 
 
 # ---------------- 443 TCP 隧道（api.pypy.dance 的 https 请求原样透传） ----------------
@@ -1604,6 +1830,7 @@ _tunnel_sock = None
 
 def _tunnel_handle(client, ips):
     up = None
+    run_id = _run_id
     try:
         for ip in ips:
             try:
@@ -1614,10 +1841,16 @@ def _tunnel_handle(client, ips):
         if up is None:
             return
         pair = [client, up]
-        while True:
-            r, _, _ = select.select(pair, [], [], 120)
+        last_activity = time.monotonic()
+        while not _cancelled(run_id):
+            r, _, _ = select.select(pair, [], [], 1)
             if not r:
+                if time.monotonic() - last_activity >= 120:
+                    return
+                continue
+            if _cancelled(run_id):
                 return
+            last_activity = time.monotonic()
             for s in r:
                 try:
                     data = s.recv(65536)
@@ -1645,6 +1878,8 @@ def _tunnel_loop(sock, ips):
     while not _stop_event.is_set():
         try:
             client, _ = sock.accept()
+        except socket.timeout:
+            continue
         except OSError:
             break
         threading.Thread(target=_tunnel_handle, args=(client, ips), daemon=True).start()
@@ -1681,47 +1916,74 @@ def extract_queue_items(lines):
 
 
 def describe_queue(items):
-    """返回 [{name, player, state}, ...]"""
+    """纯本地快照；不为显示队列发起解析请求，也不把未缓存误报为下载中。"""
+    with _downloads_lock:
+        tasks = copy.deepcopy(list(_download_meta.values()))
+        outcomes = copy.deepcopy(list(_download_results.values()))
+    cooldown = get_cooldown_state()
     result = []
-    for it in items:
+    for index, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
         sn = it.get("songNum", 0)
-        entry = {"name": it.get("videoName", "?"), "player": it.get("playerName", "")}
-        if isinstance(sn, int) and sn > 0:
-            kind0, payload0 = song_route(sn)
-            fname = payload0 if kind0 == "cdn" else (f"yt_{sn}.mp4" if kind0 == "yt" else None)
-            if fname is not None and fname == _cooldown_serving:
-                entry["state"] = "Cool Down"
-            elif in_library(sn) or yt_local_path(sn):
-                entry["state"] = "已缓存"
-            else:
-                kind, payload = song_route(sn)
-                if kind is None:
-                    resolve_video_filename(sn)
-                    kind, payload = song_route(sn)
-                if kind == "cdn":
-                    entry["state"] = "已缓存" if is_cached(payload) else "下载中"
-                elif kind == "yt":
-                    entry["state"] = "YouTube源"
-                else:
-                    entry["state"] = "待解析"
+        valid_id = isinstance(sn, int) and not isinstance(sn, bool) and sn > 0
+        kind, payload = song_route(sn) if valid_id else (None, None)
+        filename = payload if kind == "cdn" else (f"yt_{sn}.mp4" if kind == "yt" else None)
+        source = {"cdn": "cdn", "yt": "youtube"}.get(kind, "unknown" if valid_id else "external")
+        local = local_path_for(filename) if filename else None
+        if local is None and valid_id:
+            local = yt_local_path(sn)
+        matches = lambda task: (valid_id and task.get("song_id") == sn) or (filename and task.get("filename") == filename)
+        task = next((task for task in tasks if matches(task)), None)
+        outcome = next((outcome for outcome in reversed(outcomes) if matches(outcome)), None)
+        entry = {
+            "name": str(it.get("videoName") or "?"), "player": str(it.get("playerName") or ""),
+            "song_id": sn if valid_id else None, "filename": filename,
+            "source": task["source"] if task else source, "position": index,
+            "storage": ("library" if _same_directory(os.path.dirname(local), _config.get("library_dir")) else "cache") if local else None,
+            "task_id": task["task_id"] if task else None,
+            "error": None,
+        }
+        if filename and filename == cooldown["serving_filename"]:
+            code, label = "cooldown", "Cool Down"
+        elif local:
+            code, label = "cached", "已缓存"
+        elif task:
+            code, label = "downloading", "下载中"
+            entry["storage"] = task["storage"]
+        elif outcome and not outcome["ok"]:
+            code, label = ("cancelled", "已取消") if outcome["cancelled"] else ("failed", "失败")
+            entry["error"] = outcome["error"]
+        elif source == "youtube":
+            code, label = "youtube", "等待播放"
+        elif source == "external":
+            code, label = "external", "外部源"
+        elif source == "unknown":
+            code, label = "unresolved", "待解析"
         else:
-            entry["state"] = "外部源"
+            code, label = "not_cached", "未缓存"
+        entry.update(state_code=code, state=label)
         result.append(entry)
     return result
 
 
+def get_queue_snapshot():
+    with _queue_lock:
+        items = copy.deepcopy(_last_queue_items)
+    return describe_queue(items)
+
+
 def refresh_queue_state():
-    """重新计算并推送当前队列的缓存状态（队列内容不变时 VRChat 不会再写日志，
-    否则下载完成的歌状态会一直停在"下载中"）"""
-    if _last_queue_items:
-        emit("queue", items=describe_queue(_last_queue_items))
+    emit("queue", items=get_queue_snapshot())
 
 
 def submit_preload(items):
     count = int(_config["preload_count"]) + 1
     for it in items[:count]:
+        if not isinstance(it, dict) or _stop_event.is_set():
+            continue
         sn = it.get("songNum", 0)
-        if not (isinstance(sn, int) and sn > 0) or in_library(sn) or yt_local_path(sn):
+        if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0) or in_library(sn) or yt_local_path(sn):
             continue
         kind, payload = song_route(sn)
         if kind is None:
@@ -1729,6 +1991,7 @@ def submit_preload(items):
             kind, payload = song_route(sn)
         if kind == "cdn" and not is_cached(payload):
             start_background_download(payload, sn)
+    refresh_queue_state()
 
 
 # ---------------- Cool Down（切歌时把下一首替换为放松视频，一次性） ----------------
@@ -1739,81 +2002,107 @@ _cooldown_exclude = None     # 待命时正在播放的歌曲文件名（不对�
 
 
 def cooldown_file():
-    """用户在软件里选好的放松视频路径（失效返回 None）"""
-    f = (_config.get("cooldown_file") or "").strip()
-    if f and os.path.exists(f) and os.path.getsize(f) > 0:
-        return f
-    return None
+    """选中的本地放松视频；文件失效时返回 None。"""
+    path = (_config.get("cooldown_file") or "").strip()
+    try:
+        return path if path and os.path.isfile(path) and os.path.getsize(path) > 0 else None
+    except OSError:
+        return None
 
 
 def cooldown_available():
     return cooldown_file() is not None
 
 
+def get_cooldown_state():
+    with _cooldown_lock:
+        phase = "armed" if _cooldown_armed else ("serving" if _cooldown_serving is not None else "idle")
+        return {"phase": phase, "available": cooldown_available(), "active": phase != "idle",
+                "serving_filename": _cooldown_serving}
+
+
+def _emit_cooldown():
+    emit("cooldown", **get_cooldown_state())
+    refresh_queue_state()
+
+
 def _current_song_filename():
-    """当前正在播放的歌曲对应的请求文件名（cdn 文件名或 yt_{id}.mp4）"""
-    items = _last_queue_items
-    if not items:
+    with _queue_lock:
+        items = copy.deepcopy(_last_queue_items)
+    if not items or not isinstance(items[0], dict):
         return None
     sn = items[0].get("songNum", 0)
-    if not (isinstance(sn, int) and sn > 0):
+    if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
         return None
     kind, payload = song_route(sn)
-    if kind == "cdn":
-        return payload
-    if kind == "yt":
-        return f"yt_{sn}.mp4"
-    return None
+    return payload if kind == "cdn" else (f"yt_{sn}.mp4" if kind == "yt" else None)
 
 
 def cooldown_arm():
-    """进入待命：下一个非当前歌曲的视频请求将被替换为放松视频。成功返回 True"""
     global _cooldown_armed, _cooldown_serving, _cooldown_exclude
-    if not cooldown_available():
-        return False
-    _cooldown_exclude = _current_song_filename()
-    _cooldown_armed = True
-    _cooldown_serving = None
-    log("Cool Down 已待命：切到下一首歌时播放放松视频（再点一次按钮可取消）")
+    with _cooldown_lock:
+        if not _running or _stop_event.is_set() or not cooldown_available():
+            return False
+        _cooldown_exclude = _current_song_filename()
+        _cooldown_armed = True
+        _cooldown_serving = None
+    log("Cool Down 已待命：下一首在本机替换为放松视频（可点击取消）")
+    _emit_cooldown()
     return True
 
 
 def cooldown_disarm(silent=False):
     global _cooldown_armed, _cooldown_serving, _cooldown_exclude
-    _cooldown_armed = False
-    _cooldown_serving = None
-    _cooldown_exclude = None
+    with _cooldown_lock:
+        _cooldown_armed = False
+        _cooldown_serving = None
+        _cooldown_exclude = None
     if not silent:
         log("Cool Down 已取消")
+    _emit_cooldown()
 
 
 def cooldown_active():
-    return _cooldown_armed or _cooldown_serving is not None
+    return get_cooldown_state()["active"]
 
 
 def cooldown_check(filename):
-    """视频请求拦截点：该请求应改用放松视频时返回其路径，否则 None。
-    待命时第一个"非当前歌曲"的请求触发；触发后同一文件名的后续请求（含 Range）持续用放松视频，
-    直到出现别的文件名（切歌）自动恢复"""
-    global _cooldown_armed, _cooldown_serving
-    if _cooldown_serving is not None:
-        if filename == _cooldown_serving:
-            return cooldown_file()
-        _cooldown_serving = None  # 切到别的歌了，恢复正常
-    if _cooldown_armed and filename != _cooldown_exclude:
-        cd = cooldown_file()
-        if not cd:
-            log("Cool Down 触发但放松视频不可用，已自动取消（请在高级设置里重新选择）")
-            cooldown_disarm(silent=True)
-            emit("cooldown", active=False)
-            return None
-        _cooldown_armed = False
-        _cooldown_serving = filename
-        log(f"Cool Down 触发：{filename} -> 放松视频 {os.path.basename(cd)}")
-        emit("cooldown", active=False)
-        refresh_queue_state()
-        return cd
-    return None
+    """请求级一次性替换；下一个不同文件名请求解除，不伪造播放结束事件。"""
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    changed = False
+    message = None
+    path = None
+    with _cooldown_lock:
+        if _cooldown_serving is not None:
+            if filename == _cooldown_serving:
+                path = cooldown_file()
+                if path:
+                    return path
+                _cooldown_serving = None
+                _cooldown_exclude = None
+                changed = True
+                message = "Cool Down 视频已不可用，已恢复正常请求"
+            else:
+                _cooldown_serving = None
+                _cooldown_exclude = None
+                changed = True
+                message = "已切换到其他歌曲，Cool Down 本次替换结束"
+        if _cooldown_armed and filename != _cooldown_exclude:
+            path = cooldown_file()
+            _cooldown_armed = False
+            changed = True
+            if path:
+                _cooldown_serving = filename
+                message = f"Cool Down 触发：{filename} -> 放松视频 {os.path.basename(path)}"
+            else:
+                _cooldown_serving = None
+                _cooldown_exclude = None
+                message = "Cool Down 视频不可用，已自动取消，请重新选择文件"
+    if message:
+        log(message)
+    if changed:
+        _emit_cooldown()
+    return path
 
 
 class LogWatcher(threading.Thread):
@@ -1847,7 +2136,7 @@ class LogWatcher(threading.Thread):
                 tail = f.read()
             self.offset = size
             tail_lines = tail.splitlines()
-            if _config.get("enable_youtube_cache"):
+            if get_runtime_state()["youtube_available"]:
                 scan_resolved_youtube(tail_lines)
             items = extract_queue_items(tail_lines)
             if items is not None:
@@ -1868,7 +2157,7 @@ class LogWatcher(threading.Thread):
             return
         lines = self.buf.split("\n")
         self.buf = lines.pop()
-        if _config.get("enable_youtube_cache"):
+        if get_runtime_state()["youtube_available"]:
             scan_resolved_youtube(lines)
         items = extract_queue_items(lines)
         if items is not None:
@@ -1876,7 +2165,8 @@ class LogWatcher(threading.Thread):
 
     def _on_queue(self, items):
         global _last_queue_items
-        _last_queue_items = items or []
+        with _queue_lock:
+            _last_queue_items = copy.deepcopy(items or [])
         if not items:
             emit("queue", items=[])
             return
@@ -1886,101 +2176,178 @@ class LogWatcher(threading.Thread):
 
 # ---------------- 服务启停 ----------------
 
+class _StartCancelled(Exception):
+    pass
+
+
+def _spawn_service_thread(target, args=()):
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    _service_threads.append(thread)
+    thread.start()
+    return thread
+
+
 def start_services():
-    """返回 None 表示成功，否则返回错误信息字符串"""
-    global _server, _watcher, _running, _tunnel_sock
-    if _running:
-        return None
-    _stop_event.clear()
-    log("正在解析真实服务器 IP...")
-    resolve_real_ips()
-    if "cdn.pypy.dance" not in _origin_ips:
-        return "无法获取 cdn.pypy.dance 真实 IP，请检查网络后重试"
-    try:
-        _server = ThreadingHTTPServer(("127.0.0.1", 80), DanceHandler)
-    except OSError as e:
-        return f"无法绑定 80 端口 ({e})，请关闭占用该端口的程序(如 IIS/其他代理)后重试"
-    _server.daemon_threads = True
-    # YouTube 源缓存模式：劫持 api.pypy.dance，80 端口拦截 /video 重定向，443 隧道透传 https
-    yt_mode = bool(_config.get("enable_youtube_cache"))
-    if yt_mode and not _origin_ips.get(API_HOST):
-        log("警告: 无法解析 api.pypy.dance，YouTube 源缓存不可用")
-        yt_mode = False
-    if yt_mode:
+    """串行启停，返回 None 表示成功；兼容旧 CLI 的错误字符串。"""
+    global _server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
+    with _lifecycle_lock:
+        if _running:
+            return None
+        if _hosts_restore_pending:
+            error = "hosts 尚未成功恢复，请先重试停止服务后再启动"
+            _set_runtime_state(phase="failed", running=False, hosts_restore_pending=True, error=error)
+            return error
+        if _same_directory(_config.get("cache_dir"), _config.get("library_dir")):
+            error = "缓存目录与永久曲库相同，请先在设置中分开保存目录再启动服务"
+            _set_runtime_state(phase="failed", running=False, error=error)
+            return error
+        with _downloads_lock:
+            finishing = bool(_downloads_in_progress)
+        if finishing or rebuilding() or verifying() or any(t.is_alive() for t in _service_threads):
+            error = "仍有后台任务正在结束，请稍后再启动服务"
+            _set_runtime_state(phase="failed", running=False, error=error)
+            return error
+        _service_threads.clear()
+        _run_id += 1
+        _stop_event.clear()
+        _library_stop.clear()
+        _set_runtime_state(phase="starting", running=False, youtube_available=False,
+                           queue_watcher_available=False, hosts_restore_pending=False,
+                           warnings=[], error=None)
+        server_started = False
+        hosts_touched = False
+        warnings = []
         try:
-            _tunnel_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            _tunnel_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            _tunnel_sock.bind(("127.0.0.1", 443))
-            _tunnel_sock.listen(64)
-        except OSError as e:
-            log(f"警告: 无法绑定 443 端口 ({e})，YouTube 源缓存不可用")
+            log("正在解析真实服务器 IP...")
+            resolve_real_ips()
+            if _stop_event.is_set():
+                raise _StartCancelled()
+            if not _origin_ips.get("cdn.pypy.dance"):
+                raise RuntimeError("无法获取 cdn.pypy.dance 真实 IP，请检查网络后重试")
             try:
-                _tunnel_sock.close()
-            except Exception:
-                pass
-            _tunnel_sock = None
-            yt_mode = False
-    try:
-        hijack_hosts(yt_mode)
-    except PermissionError as e:
-        _server.server_close()
-        _server = None
-        if _tunnel_sock:
-            try:
-                _tunnel_sock.close()
-            except Exception:
-                pass
-            _tunnel_sock = None
-        return f"hosts 修改失败（{_hosts_error_reason(e)}）"
-    threading.Thread(target=_server.serve_forever, daemon=True).start()
-    threading.Thread(target=_hosts_watchdog_loop, args=(yt_mode,), daemon=True).start()
-    if _tunnel_sock:
-        threading.Thread(target=_tunnel_loop,
-                         args=(_tunnel_sock, list(_origin_ips[API_HOST])), daemon=True).start()
-        log("YouTube 源缓存已启用（api.pypy.dance 已劫持，443 隧道透传 https 请求）")
-    threading.Thread(target=_mapping_flush_loop, daemon=True).start()
-    log("本地缓存服务已启动: 127.0.0.1:80")
-    pref = (_config.get("preferred_cdn_ip") or "").strip()
-    if pref:
-        log(f"优选 CDN IP: {pref}（失效时自动回落默认节点）")
-    if os.path.isdir(VRC_LOG_DIR):
-        _watcher = LogWatcher()
-        _watcher.start()
-    else:
-        log(f"提示: 未找到 VRChat 日志目录 ({VRC_LOG_DIR})，仅提供被动缓存")
-    _running = True
-    emit_stats()
-    emit("state", running=True)
-    log("运行中。进跳舞房点歌即可。")
-    return None
+                _server = ThreadingHTTPServer(("127.0.0.1", 80), DanceHandler)
+            except OSError as e:
+                raise RuntimeError(f"无法绑定 80 端口 ({e})，请关闭占用该端口的程序后重试") from e
+            _server.daemon_threads = True
+            yt_mode = bool(_config.get("enable_youtube_cache"))
+            if yt_mode and not _origin_ips.get(API_HOST):
+                warnings.append("无法解析 api.pypy.dance，YouTube 源缓存不可用")
+                yt_mode = False
+            if yt_mode:
+                try:
+                    _tunnel_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    _tunnel_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    _tunnel_sock.bind(("127.0.0.1", 443))
+                    _tunnel_sock.listen(64)
+                    _tunnel_sock.settimeout(1)
+                except OSError as e:
+                    warnings.append(f"无法绑定 443 端口 ({e})，YouTube 源缓存不可用")
+                    if _tunnel_sock is not None:
+                        _tunnel_sock.close()
+                    _tunnel_sock = None
+                    yt_mode = False
+            if _stop_event.is_set():
+                raise _StartCancelled()
+            hosts_touched = True
+            # 即使 hosts 写入中途失败，也必须保留恢复责任，直到恢复真正成功。
+            _hosts_restore_pending = True
+            hijack_hosts(yt_mode)
+            if _stop_event.is_set():
+                raise _StartCancelled()
+            _spawn_service_thread(_server.serve_forever)
+            server_started = True
+            _spawn_service_thread(_hosts_watchdog_loop, (yt_mode,))
+            if _tunnel_sock is not None:
+                _spawn_service_thread(_tunnel_loop, (_tunnel_sock, list(_origin_ips[API_HOST])))
+            _spawn_service_thread(_mapping_flush_loop)
+            watcher_available = os.path.isdir(VRC_LOG_DIR)
+            _set_runtime_state(youtube_available=yt_mode, queue_watcher_available=watcher_available)
+            if watcher_available:
+                _watcher = LogWatcher()
+                _service_threads.append(_watcher)
+                _watcher.start()
+            else:
+                warnings.append("未找到 VRChat 日志目录，当前仅提供被动缓存")
+            _running = True
+            _set_runtime_state(phase="running", running=True, youtube_available=yt_mode,
+                               queue_watcher_available=watcher_available, hosts_restore_pending=True,
+                               warnings=warnings, error=None)
+            for warning in warnings:
+                log("提示: " + warning)
+            emit_stats()
+            log("本地缓存服务运行中：127.0.0.1:80")
+            return None
+        except Exception as e:
+            cancelled = isinstance(e, _StartCancelled)
+            _stop_event.set()
+            if _server is not None:
+                try:
+                    if server_started:
+                        _server.shutdown()
+                    _server.server_close()
+                except Exception:
+                    pass
+                _server = None
+            if _tunnel_sock is not None:
+                try:
+                    _tunnel_sock.close()
+                except Exception:
+                    pass
+                _tunnel_sock = None
+            _watcher = None
+            _running = False
+            restored = restore_hosts() if hosts_touched else True
+            _hosts_restore_pending = not restored
+            error = "启动已取消" if cancelled else str(e)
+            if not restored:
+                error += "；hosts 恢复失败，请检查日志"
+            _set_runtime_state(phase="stopped" if cancelled and restored else "failed", running=False,
+                               youtube_available=False, queue_watcher_available=False,
+                               hosts_restore_pending=_hosts_restore_pending,
+                               warnings=warnings, error=None if cancelled and restored else error)
+            return error
 
 
 def stop_services():
-    global _server, _watcher, _running, _tunnel_sock
-    if not _running:
-        return
+    """停止并恢复 hosts；None 表示成功，错误字符串表示需留窗重试。"""
+    global _server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
+    # 在等待生命周期锁之前通知启动线程取消，防止窗口关闭后又启动成功。
     _stop_event.set()
-    cancel_library_download()
-    cooldown_disarm(silent=True)
-    if _server:
-        try:
-            _server.shutdown()
-            _server.server_close()
-        except Exception:
-            pass
-        _server = None
-    if _tunnel_sock:
-        try:
-            _tunnel_sock.close()
-        except Exception:
-            pass
-        _tunnel_sock = None
-    _watcher = None
-    restore_hosts()
-    flush_mapping()
-    _running = False
-    emit("state", running=False)
-    log("服务已停止")
+    with _lifecycle_lock:
+        needs_restore = _hosts_restore_pending or _running
+        _set_runtime_state(phase="stopping", error=None)
+        _run_id += 1
+        cancel_library_download()
+        cooldown_disarm(silent=True)
+        if _server is not None:
+            try:
+                _server.shutdown()
+                _server.server_close()
+            except Exception as e:
+                log(f"HTTP 服务关闭异常: {e}")
+            _server = None
+        if _tunnel_sock is not None:
+            try:
+                _tunnel_sock.close()
+            except OSError:
+                pass
+            _tunnel_sock = None
+        restored = restore_hosts() if needs_restore else True
+        _hosts_restore_pending = not restored
+        flush_mapping()
+        _running = False
+        _watcher = None
+        deadline = time.monotonic() + 2
+        for thread in list(_service_threads):
+            if thread is not threading.current_thread() and thread.is_alive():
+                thread.join(max(0, deadline - time.monotonic()))
+        error = None if restored else "服务已停止，但 hosts 恢复失败，请检查日志并重试停止服务"
+        _set_runtime_state(phase="stopped" if restored else "failed", running=False,
+                           youtube_available=False, queue_watcher_available=False, warnings=[],
+                           hosts_restore_pending=_hosts_restore_pending, error=error)
+        log("服务已停止" if restored else "服务已停止，hosts 尚未成功恢复")
+        refresh_queue_state()
+        return error
 
 
 def is_running():

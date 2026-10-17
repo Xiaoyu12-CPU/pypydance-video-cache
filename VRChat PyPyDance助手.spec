@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Compatibility build entry. Prefer build_windows.ps1 to also collect notices.
+# User configuration, themes, backgrounds, and cached videos are not bundled.
 
+from pathlib import Path
+
+project_root = Path(SPECPATH)
 
 a = Analysis(
-    ['dance_cache_gui.py'],
-    pathex=[],
+    [str(project_root / 'dance_cache_gui.py')],
+    pathex=[str(project_root)],
     binaries=[],
-    datas=[],
+    datas=[
+        (str(project_root / 'README.md'), '.'),
+        (str(project_root / 'LICENSE'), '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -19,20 +27,23 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='VRChat PyPyDance助手',
+    exclude_binaries=True,
+    name='PyPyDanceCache',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    uac_admin=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='PyPyDanceCache',
 )

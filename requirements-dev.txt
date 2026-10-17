@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Build Windows bundles with the same interpreter as the application.
+PyInstaller>=6,<7
