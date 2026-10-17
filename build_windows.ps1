@@ -31,8 +31,11 @@ Push-Location $projectRoot
 try {
     $runtimeCheck = @'
 import sys
+import struct
 if sys.platform != "win32":
     raise SystemExit("Use a native Windows Python interpreter, not WSL Python.")
+if struct.calcsize("P") != 8:
+    raise SystemExit("The Windows x64 bundle requires a 64-bit Python interpreter.")
 if sys.version_info < (3, 10):
     raise SystemExit("The Qt GUI requires Python 3.10 or newer.")
 print("Build interpreter:", sys.executable)
@@ -49,7 +52,9 @@ from importlib import metadata
 from PySide6 import QtCore, QtGui, QtWidgets
 from PIL import Image
 import PyInstaller
-for name in ("PySide6-Essentials", "Pillow", "PyInstaller"):
+# Importing openvr loads its native library; do not initialize SteamVR here.
+import openvr
+for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
     print(f"{name}: {metadata.version(name)}")
 '@
     Invoke-ProjectPython -Arguments @("-c", $dependencyCheck)
@@ -62,6 +67,7 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller"):
         "--distpath", (Join-Path $projectRoot "dist"),
         "--workpath", (Join-Path $projectRoot "build"),
         "--specpath", (Join-Path $projectRoot "build"),
+        "--additional-hooks-dir", (Join-Path $projectRoot "tools\pyinstaller_hooks"),
         "--add-data", ((Join-Path $projectRoot "dance_ui\presets") + ";dance_ui/presets"),
         "dance_cache_gui.py"
     )
@@ -86,7 +92,7 @@ import shutil
 import sys
 
 destination = Path(sys.argv[1]) / "THIRD_PARTY_LICENSES"
-for package in ("PySide6-Essentials", "shiboken6", "Pillow", "PyInstaller"):
+for package in ("PySide6-Essentials", "shiboken6", "Pillow", "PyInstaller", "openvr"):
     distribution = metadata.distribution(package)
     copied = 0
     for entry in distribution.files or ():

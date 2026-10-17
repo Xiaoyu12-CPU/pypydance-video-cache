@@ -125,6 +125,26 @@ class CoreController(QObject):
         self.event.emit("cooldown", core.get_cooldown_state())
         self.refresh_stats()
 
+    def configure_steamvr(self, state_dir):
+        from .steamvr_startup import SteamVRStartup
+        self._steamvr_startup = SteamVRStartup(state_dir)
+        self._demo_steamvr_enabled = False
+
+    def steamvr_status(self):
+        if self.demo:
+            self.result.emit("steamvr_startup", {
+                "enabled": self._demo_steamvr_enabled, "available": True,
+                "message": "演示模式：启动选项仅本次演示有效，不注册 SteamVR。"})
+        else:
+            self._run("steamvr_startup", self._steamvr_startup.status)
+
+    def set_steamvr_startup(self, enabled):
+        if self.demo:
+            self._demo_steamvr_enabled = bool(enabled)
+            self.steamvr_status()
+        else:
+            self._run("steamvr_startup", lambda: self._steamvr_startup.set_enabled(enabled))
+
     def refresh_stats(self):
         if not self.demo:
             self._run("stats", core.emit_stats)

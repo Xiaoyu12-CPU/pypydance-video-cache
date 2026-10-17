@@ -111,7 +111,27 @@ class Pages:
 
     def build_settings_page(self):
         area, body, box = page()
-        box.addWidget(section_title("设置", "下载、放松视频与网络"))
+        box.addWidget(section_title("设置", "下载、放松视频、网络与启动"))
+        startup = Card()
+        startup.box.addWidget(label("启动", subheading=True))
+        self.steamvr_startup = QCheckBox("跟随 SteamVR 启动")
+        self.steamvr_startup.setTristate(True)
+        self.steamvr_startup.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.steamvr_startup.setEnabled(False)
+        self.steamvr_startup.toggled.connect(self.mark_steamvr_dirty)
+        startup.box.addWidget(self.steamvr_startup)
+        self.steamvr_hint = label("尚未读取 SteamVR 启动设置。", muted=True, wrap=True)
+        startup.box.addWidget(self.steamvr_hint)
+        self.steamvr_apply_button = button("应用启动设置", self.apply_steamvr_startup, primary=True)
+        self.steamvr_apply_button.setEnabled(False)
+        self.steamvr_refresh_button = button("刷新状态", self.refresh_steamvr_startup)
+        actions, _ = row(self.steamvr_apply_button, self.steamvr_refresh_button, stretch=True)
+        startup.box.addWidget(actions)
+        startup.box.addWidget(label(
+            "仅在 Windows 生效。设置时请先启动 SteamVR，再应用启动设置。启动本程序时仍需确认管理员授权；移动程序位置后请重新启用。关闭 SteamVR 不会关闭本程序。",
+            muted=True, wrap=True,
+        ))
+        box.addWidget(startup)
         general = Card()
         general.box.addWidget(label("缓存行为", subheading=True))
         preload_row, preload_box = row(label("预缓存后续歌曲"))

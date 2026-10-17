@@ -13,7 +13,8 @@ import threading
 import unittest
 from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -111,7 +112,7 @@ class UIIntegrationTests(unittest.TestCase):
         mocked.return_value = result
         return mocked
 
-    def make_window(self, *, demo=True, publish=True, before_controller=None):
+    def make_window(self, *, demo=True, publish=True, before_controller=None, steamvr_read=None):
         if not demo:
             for name in ("load_config", "load_mapping", "add_listener", "remove_listener", "emit_stats"):
                 self.allow_core(name)
@@ -124,6 +125,17 @@ class UIIntegrationTests(unittest.TestCase):
             before_controller()
         store = ThemeStore(self.root / ("appearance-" + str(len(self.windows))))
         controller = CoreController(demo=demo)
+        # A real Windows test runner must not query or modify its SteamVR setup.
+        # Integration tests below explicitly control this separate system bridge.
+        if not demo:
+            controller.steamvr_status = lambda: controller.result.emit("steamvr_startup", {
+                "enabled": False, "available": True, "message": "未启用跟随 SteamVR 启动。",
+            })
+            controller.set_steamvr_startup = lambda enabled: controller.result.emit("steamvr_startup", {
+                "enabled": enabled, "available": True, "message": "启动设置已保存。",
+            })
+        if steamvr_read is not None:
+            controller.steamvr_status = lambda: steamvr_read(controller)
         window = MainWindow(controller, store)
         self.windows.append((window, controller))
         window.show()
@@ -199,6 +211,177 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.cooldown_path.text(), str(self.root / "unsaved-draft.mp4"))
         self.assertTrue(window._dirty["settings"])
         self.assertTrue(window.apply_buttons["settings"].isEnabled())
+
+    def test_steamvr_demo_applies_independently_and_refresh_preserves_a_draft(self):
+        window, controller, _ = self.make_window()
+        self.wait_until(lambda: window._steamvr_saved is not None)
+        self.assertFalse(window.steamvr_startup.isTristate())
+        self.assertFalse(window.steamvr_startup.isChecked())
+        original = controller.config()
+        window.preload_count.setValue(7)
+        window.steamvr_startup.setChecked(True)
+        self.assertTrue(window.steamvr_apply_button.isEnabled())
+        window.refresh_steamvr_startup()
+        self.wait_until(lambda: not controller.busy("steamvr_startup"))
+        self.assertTrue(window.steamvr_startup.isChecked())
+        self.assertTrue(window._steamvr_dirty)
+        window.apply_steamvr_startup()
+        self.wait_until(lambda: window._steamvr_saved is True and not controller.busy("steamvr_startup"))
+        self.assertFalse(window._steamvr_dirty)
+        self.assertFalse(window.steamvr_apply_button.isEnabled())
+        self.assertEqual(window.preload_count.value(), 7)
+        self.assertTrue(window._dirty["settings"])
+        self.assertEqual(controller.config(), original)
+        window.load_fields("settings")
+        self.assertTrue(window.steamvr_startup.isChecked())
+        window.refresh_steamvr_startup()
+        self.wait_until(lambda: not controller.busy("steamvr_startup"))
+        self.assertTrue(window.steamvr_startup.isChecked())
+        for mocked in self.core_mocks.values():
+            mocked.assert_not_called()
+
+    def test_steamvr_failed_initial_read_stays_unknown_and_refresh_can_recover(self):
+        def fail(controller):
+            controller.error.emit("steamvr_startup", "找不到 SteamVR 接口")
+
+        window, controller, _ = self.make_window(demo=False, steamvr_read=fail)
+        self.assertIsNone(window._steamvr_saved)
+        self.assertEqual(window.steamvr_startup.checkState(), Qt.CheckState.PartiallyChecked)
+        self.assertFalse(window.steamvr_startup.isEnabled())
+        self.assertFalse(window.steamvr_apply_button.isEnabled())
+        self.assertIn("读取失败", window.steamvr_hint.text())
+        controller.steamvr_status = lambda: controller.result.emit("steamvr_startup", {
+            "enabled": True, "available": True, "message": "已启用跟随 SteamVR 启动。",
+        })
+        window.refresh_steamvr_startup()
+        self.assertTrue(window.steamvr_startup.isEnabled())
+        self.assertTrue(window.steamvr_startup.isChecked())
+        self.assertFalse(window.steamvr_startup.isTristate())
+        self.assertFalse(window._steamvr_dirty)
+
+    def test_steamvr_unavailable_platform_explains_it_without_claiming_disabled(self):
+        def unavailable(controller):
+            controller.result.emit("steamvr_startup", {
+                "enabled": False, "available": False, "message": "仅支持 Windows。",
+            })
+
+        window, _, _ = self.make_window(demo=False, steamvr_read=unavailable)
+        self.assertIsNone(window._steamvr_saved)
+        self.assertEqual(window.steamvr_startup.checkState(), Qt.CheckState.PartiallyChecked)
+        self.assertFalse(window.steamvr_startup.isEnabled())
+        self.assertIn("仅支持 Windows", window.steamvr_hint.text())
+        self.assertNotIn("未启用", window.steamvr_hint.text())
+        self.assertTrue(window.steamvr_refresh_button.isEnabled())
+
+    def test_steamvr_async_save_failure_retains_draft_waits_on_exit_and_retries(self):
+        window, controller, _ = self.make_window(demo=False)
+        window.preferred_ip.setText("1.1.1.1")
+        window.steamvr_startup.setChecked(True)
+        entered, release = threading.Event(), threading.Event()
+        self.release_events.append(release)
+
+        def reject():
+            entered.set()
+            release.wait(1)
+            raise RuntimeError("SteamVR 尚未就绪")
+
+        controller.set_steamvr_startup = lambda enabled: controller._run("steamvr_startup", reject)
+        window.apply_steamvr_startup()
+        self.wait_until(entered.is_set)
+        self.assertFalse(window.steamvr_startup.isEnabled())
+        self.assertFalse(window.steamvr_apply_button.isEnabled())
+        self.assertFalse(window.steamvr_refresh_button.isEnabled())
+        self.assertIn("正在保存", window.steamvr_hint.text())
+        window.close()
+        self.assertTrue(window.isVisible())
+        self.assertFalse(window._closing)
+        self.assertFalse(controller.busy("shutdown"))
+        release.set()
+        self.wait_until(lambda: not controller.busy("steamvr_startup"))
+        self.assertTrue(window.steamvr_startup.isChecked())
+        self.assertTrue(window._steamvr_dirty)
+        self.assertTrue(window.steamvr_startup.isEnabled())
+        self.assertTrue(window.steamvr_apply_button.isEnabled())
+        self.assertIn("保存失败", window.steamvr_hint.text())
+        self.assertIn("SteamVR 尚未就绪", window.steamvr_hint.text())
+        controller.set_steamvr_startup = lambda enabled: controller._run("steamvr_startup", lambda: {
+            "enabled": enabled, "available": True, "message": "启动设置已保存。",
+        })
+        window.apply_steamvr_startup()
+        self.wait_until(lambda: not controller.busy("steamvr_startup"))
+        self.assertTrue(window._steamvr_saved)
+        self.assertFalse(window._steamvr_dirty)
+        self.assertEqual(window.preferred_ip.text(), "1.1.1.1")
+        self.assertTrue(window._dirty["settings"])
+        self.core_mocks["update_config"].assert_not_called()
+
+    def test_steamvr_unapplied_draft_is_included_in_exit_confirmation(self):
+        window, controller, _ = self.make_window()
+        self.wait_until(lambda: window._steamvr_saved is not None)
+        window.steamvr_startup.setChecked(True)
+        from PySide6.QtWidgets import QMessageBox
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
+            window.close()
+        question.assert_called_once()
+        self.assertIn("启动", question.call_args.args[2])
+        self.assertTrue(window.isVisible())
+        self.assertFalse(window._closing)
+        self.assertFalse(controller.busy("shutdown"))
+
+    def test_steamvr_launch_elevates_before_claim_and_duplicate_creates_no_window(self):
+        from dance_ui import app as app_module
+
+        order = []
+        self.allow_core("ensure_admin", lambda: order.append("admin"))
+        # A duplicate launch receives None from the Windows instance guard.
+        claim = Mock(side_effect=lambda: (order.append("claim"), None)[1])
+        with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
+                patch.dict("sys.modules", {"dance_ui.single_instance": SimpleNamespace(claim_instance=claim)}), \
+                patch.object(app_module, "QApplication") as application:
+            self.assertEqual(app_module.main(["--steamvr-startup"]), 0)
+        self.assertEqual(order, ["admin", "claim"])
+        application.assert_not_called()
+
+    def test_no_autostart_still_claims_instance_and_releases_on_initialization_failure(self):
+        from dance_ui import app as app_module
+
+        instance = Mock()
+        claim = Mock(return_value=instance)
+        with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
+                patch.dict("sys.modules", {"dance_ui.single_instance": SimpleNamespace(claim_instance=claim)}), \
+                patch.object(app_module, "QApplication"), \
+                patch.object(app_module.QFontDatabase, "families", return_value=["PingFang SC"]), \
+                patch.object(app_module, "QFont"), \
+                patch.object(app_module, "ThemeStore", side_effect=ValueError("测试初始化失败")), \
+                patch.object(app_module.QMessageBox, "critical") as critical:
+            self.assertEqual(app_module.main(["--no-autostart", "--state-dir", str(self.root)]), 1)
+        claim.assert_called_once_with()
+        instance.close.assert_called_once_with()
+        self.core_mocks["ensure_admin"].assert_not_called()
+        critical.assert_called_once()
+        self.assertIn("测试初始化失败", critical.call_args.args[2])
+
+    def test_instance_guard_error_is_reported_and_demo_never_claims_it(self):
+        from dance_ui import app as app_module
+
+        claim = Mock(side_effect=OSError("实例检测失败"))
+        with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
+                patch.dict("sys.modules", {"dance_ui.single_instance": SimpleNamespace(claim_instance=claim)}), \
+                patch.object(app_module, "QApplication"), \
+                patch.object(app_module.QMessageBox, "critical") as critical:
+            self.assertEqual(app_module.main(["--no-autostart"]), 1)
+        critical.assert_called_once()
+        self.assertIn("实例检测失败", critical.call_args.args[2])
+        claim.reset_mock()
+        with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
+                patch.dict("sys.modules", {"dance_ui.single_instance": SimpleNamespace(claim_instance=claim)}), \
+                patch.object(app_module, "QApplication"), \
+                patch.object(app_module.QFontDatabase, "families", return_value=["PingFang SC"]), \
+                patch.object(app_module, "QFont"), \
+                patch.object(app_module, "ThemeStore", side_effect=ValueError("演示隔离测试")), \
+                patch.object(app_module.QMessageBox, "critical"):
+            self.assertEqual(app_module.main(["--demo", "--steamvr-startup", "--state-dir", str(self.root)]), 1)
+        claim.assert_not_called()
 
     def test_async_config_failure_preserves_draft_and_allows_retry(self):
         window, controller, _ = self.make_window(demo=False)

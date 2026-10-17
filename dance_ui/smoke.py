@@ -17,6 +17,18 @@ from . import __version__
 from .theme import BUNDLED_PRESET_DIR, THEME_FIELDS
 
 
+def _check_openvr_library(report: dict) -> None:
+    """Check the frozen DLL without initializing or configuring SteamVR."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    # pyopenvr loads libopenvr_api_64.dll at import time. init() and the
+    # applications API intentionally remain unused in this demo-only check.
+    import openvr
+
+    report["openvr_version"] = openvr.__version__
+    report["checks"].append("openvr_library_loaded_without_initialization")
+
+
 def inspect_demo(window) -> dict:
     """Exercise real Qt resources/rendering, without starting the cache core."""
     report = {
@@ -25,11 +37,13 @@ def inspect_demo(window) -> dict:
         "application_version": __version__, "qt_version": qVersion(),
         "pyside_version": pyside_version, "pillow_version": pillow_version,
         "checks": [], "real_service_tested": False, "vrchat_tested": False,
+        "steamvr_tested": False,
     }
     try:
         if not window.controller.demo:
             raise ValueError("Executable smoke checks require an isolated demo.")
         report["checks"].append("demo_mode")
+        _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))
         snapshot = json.loads((BUNDLED_PRESET_DIR / "theme.json").read_text(encoding="utf-8"))

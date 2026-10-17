@@ -6,13 +6,77 @@ import io
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 import tempfile
+from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 from tools import publish_windows_preview as publisher
+
+
+class OpenVRPackagingTests(unittest.TestCase):
+    def run_hook(self, package_dir, windows):
+        """Exercise the hook without importing OpenVR or requiring PyInstaller."""
+        hook_modules = {
+            name: ModuleType(name)
+            for name in ("PyInstaller", "PyInstaller.compat", "PyInstaller.utils", "PyInstaller.utils.hooks")
+        }
+        hook_modules["PyInstaller.compat"].is_win = windows
+        package_paths = Mock(return_value=(str(package_dir.parent), str(package_dir)))
+        hook_modules["PyInstaller.utils.hooks"].get_package_paths = package_paths
+        hook = Path(__file__).resolve().parents[1] / "tools" / "pyinstaller_hooks" / "hook-openvr.py"
+        with patch.dict(sys.modules, hook_modules):
+            result = runpy.run_path(str(hook))
+        return result, package_paths
+
+    def test_hook_collects_only_the_windows_x64_library(self):
+        with tempfile.TemporaryDirectory(prefix="pypydance-openvr-hook-") as directory:
+            package_dir = Path(directory) / "openvr"
+            package_dir.mkdir()
+            for name in ("libopenvr_api_64.dll", "libopenvr_api_32.dll", "libopenvr_api_64.so", "libopenvr_api_32.dylib"):
+                (package_dir / name).write_bytes(b"synthetic library")
+            result, package_paths = self.run_hook(package_dir, windows=True)
+            self.assertEqual(result["binaries"], [(str(package_dir / "libopenvr_api_64.dll"), "openvr")])
+            package_paths.assert_called_once_with("openvr")
+
+    def test_hook_rejects_missing_windows_library_and_ignores_other_platforms(self):
+        with tempfile.TemporaryDirectory(prefix="pypydance-openvr-hook-") as directory:
+            package_dir = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "Windows x64 OpenVR library is missing"):
+                self.run_hook(package_dir, windows=True)
+            result, package_paths = self.run_hook(package_dir, windows=False)
+            self.assertEqual(result["binaries"], [])
+            package_paths.assert_not_called()
+
+    def test_frozen_windows_smoke_loads_openvr_without_initializing_steamvr(self):
+        from dance_ui.smoke import _check_openvr_library
+
+        openvr = SimpleNamespace(__version__="2.12.1401", init=Mock(), VRApplications=Mock())
+        report = {"checks": []}
+        with patch.object(sys, "platform", "win32"), patch.object(sys, "frozen", True, create=True), \
+                patch.dict(sys.modules, {"openvr": openvr}):
+            _check_openvr_library(report)
+        self.assertEqual(report["openvr_version"], "2.12.1401")
+        self.assertEqual(report["checks"], ["openvr_library_loaded_without_initialization"])
+        openvr.init.assert_not_called()
+        openvr.VRApplications.assert_not_called()
+
+    def test_smoke_requires_openvr_only_in_frozen_windows(self):
+        from dance_ui.smoke import _check_openvr_library
+
+        with patch.dict(sys.modules, {"openvr": None}):
+            for platform, frozen in (("darwin", False), ("darwin", True), ("win32", False)):
+                with self.subTest(platform=platform, frozen=frozen), \
+                        patch.object(sys, "platform", platform), patch.object(sys, "frozen", frozen, create=True):
+                    report = {"checks": []}
+                    _check_openvr_library(report)
+                    self.assertEqual(report, {"checks": []})
+            with patch.object(sys, "platform", "win32"), patch.object(sys, "frozen", True, create=True):
+                with self.assertRaises(ModuleNotFoundError):
+                    _check_openvr_library({"checks": []})
 
 
 class ReleaseAssetTests(unittest.TestCase):

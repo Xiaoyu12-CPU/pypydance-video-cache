@@ -1,3 +1,5 @@
 # QtCore, QtGui, and QtWidgets are included in Essentials.
 PySide6-Essentials==6.12.0
 Pillow>=10.4,<13
+# SteamVR auto-launch integration is only available in the Windows application.
+openvr==2.12.1401; sys_platform == 'win32'

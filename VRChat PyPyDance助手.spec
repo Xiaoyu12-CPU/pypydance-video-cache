@@ -17,7 +17,7 @@ a = Analysis(
         (str(project_root / 'dance_ui' / 'presets'), 'dance_ui/presets'),
     ],
     hiddenimports=[],
-    hookspath=[],
+    hookspath=[str(project_root / 'tools' / 'pyinstaller_hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

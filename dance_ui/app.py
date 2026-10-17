@@ -38,6 +38,7 @@ class MainWindow(QMainWindow, Pages):
     def __init__(self, controller: CoreController, store: ThemeStore):
         super().__init__()
         self.controller, self.store = controller, store
+        self.controller.configure_steamvr(store.root_dir)
         from .cdn_favorites import CDNFavorites
         self.cdn_favorites = CDNFavorites(store.root_dir)
         self._syncing = False
@@ -48,6 +49,12 @@ class MainWindow(QMainWindow, Pages):
         self._queue = []
         self._downloads = {}
         self._scan_results = []
+        self._steamvr_saved = None
+        self._steamvr_available = False
+        self._steamvr_dirty = False
+        self._steamvr_syncing = False
+        self._steamvr_pending = None
+        self._steamvr_busy = False
         self._maintenance = None
         self._can_close = False
         self._closing = False
@@ -99,6 +106,7 @@ class MainWindow(QMainWindow, Pages):
         self.apply_appearance()
         self.render_queue()
         self.render_downloads()
+        QTimer.singleShot(0, self.refresh_steamvr_startup)
 
     def build_header(self, outer):
         header = QWidget()
@@ -370,6 +378,58 @@ class MainWindow(QMainWindow, Pages):
             patch = {"preload_count": self.preload_count.value(), "enable_youtube_cache": self.youtube_enabled.isChecked(),
                      "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip()}
         self.controller.apply_config(patch, section)
+
+    def render_steamvr_controls(self):
+        editable = self._steamvr_available and self._steamvr_saved is not None and not self._steamvr_busy
+        self.steamvr_startup.setEnabled(editable)
+        self.steamvr_apply_button.setEnabled(editable and self._steamvr_dirty)
+        self.steamvr_refresh_button.setEnabled(not self._steamvr_busy)
+
+    def mark_steamvr_dirty(self):
+        if self._steamvr_syncing or self._steamvr_saved is None:
+            return
+        self._steamvr_dirty = self.steamvr_startup.isChecked() != self._steamvr_saved
+        self.steamvr_hint.setText("启动设置有未应用的更改。" if self._steamvr_dirty else (
+            "已启用跟随 SteamVR 启动。" if self._steamvr_saved else "未启用跟随 SteamVR 启动。"))
+        self.render_steamvr_controls()
+
+    def refresh_steamvr_startup(self):
+        if self._closing or self._can_close or self._steamvr_busy:
+            return
+        self._steamvr_pending = "read"
+        self.controller.steamvr_status()
+
+    def apply_steamvr_startup(self):
+        if self._steamvr_busy or not self._steamvr_available or not self._steamvr_dirty:
+            return
+        self._steamvr_pending = "save"
+        self.controller.set_steamvr_startup(self.steamvr_startup.isChecked())
+
+    def show_steamvr_status(self, result):
+        result = result or {}
+        self._steamvr_available = bool(result.get("available"))
+        known = self._steamvr_available and isinstance(result.get("enabled"), bool)
+        preserve_draft = self._steamvr_pending != "save" and self._steamvr_dirty
+        self._steamvr_saved = result["enabled"] if known else None
+        self._steamvr_syncing = True
+        try:
+            if not preserve_draft:
+                self.steamvr_startup.setCheckState(
+                    Qt.CheckState.Checked if self._steamvr_saved is True else
+                    Qt.CheckState.Unchecked if self._steamvr_saved is False else Qt.CheckState.PartiallyChecked)
+                self.steamvr_startup.setTristate(not known)
+                self._steamvr_dirty = False
+            elif known:
+                self._steamvr_dirty = self.steamvr_startup.isChecked() != self._steamvr_saved
+        finally:
+            self._steamvr_syncing = False
+        message = str(result.get("message") or (
+            "已启用跟随 SteamVR 启动。" if self._steamvr_saved is True else
+            "未启用跟随 SteamVR 启动。" if self._steamvr_saved is False else "无法确认 SteamVR 启动状态。"))
+        if self._steamvr_dirty:
+            message += " 启动设置有未应用的更改。"
+        self.steamvr_hint.setText(message)
+        self.render_steamvr_controls()
 
     def browse_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择永久曲库目录", self.library_path.text())
@@ -670,7 +730,9 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, object)
     def on_result(self, operation, result):
-        if operation.startswith("apply_"):
+        if operation == "steamvr_startup":
+            self.show_steamvr_status(result)
+        elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             self.load_fields(section)
             self.notify("设置已应用。" + ("请重新启动服务。" if (result or {}).get("restart_required") else ""))
@@ -697,7 +759,10 @@ class MainWindow(QMainWindow, Pages):
     @Slot(str, str)
     def on_error(self, operation, message):
         self.notify(message, error=True)
-        if operation.startswith("apply_"):
+        if operation == "steamvr_startup":
+            self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + message)
+            self.render_steamvr_controls()
+        elif operation.startswith("apply_"):
             self.apply_hints[operation.removeprefix("apply_")].setText("保存失败，更改仍保留")
         elif operation in ("rebuild", "verify"):
             self.finish_maintenance()
@@ -714,7 +779,14 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, bool)
     def on_busy(self, operation, busy):
-        if operation.startswith("apply_"):
+        if operation == "steamvr_startup":
+            self._steamvr_busy = busy
+            if busy:
+                self.steamvr_hint.setText("正在保存启动设置…" if self._steamvr_pending == "save" else "正在读取启动设置…")
+            else:
+                self._steamvr_pending = None
+            self.render_steamvr_controls()
+        elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             self.stack.widget(1 if section == "storage" else 2).setEnabled(not busy)
             self.apply_buttons[section].setEnabled(not busy and self._dirty[section])
@@ -742,11 +814,11 @@ class MainWindow(QMainWindow, Pages):
         event.ignore()
         if self._closing:
             return
-        if self.controller.busy("apply_storage") or self.controller.busy("apply_settings"):
+        if any(self.controller.busy(operation) for operation in ("apply_storage", "apply_settings", "steamvr_startup")):
             self.notify("正在保存设置，请等待完成后再退出。")
             return
-        if any(self._dirty.values()) and QMessageBox.question(
-            self, "尚有未应用的更改", "存储或设置页面有未应用的更改。放弃这些更改并退出？\n外观设置已经自动保存。",
+        if (any(self._dirty.values()) or self._steamvr_dirty) and QMessageBox.question(
+            self, "尚有未应用的更改", "存储、设置或启动选项有未应用的更改。放弃这些更改并退出？\n外观设置已经自动保存。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -760,6 +832,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="VRChat PyPyDance 缓存助手")
     parser.add_argument("--demo", action="store_true", help="使用隔离的演示数据，不启动服务或修改缓存")
     parser.add_argument("--no-autostart", action="store_true", help="启动界面但不自动启动缓存服务")
+    parser.add_argument("--steamvr-startup", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--state-dir", type=Path, help="指定外观数据目录；不会改变缓存配置路径")
     parser.add_argument("--smoke-test-report", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -768,6 +841,17 @@ def main(argv=None):
     if os.name == "nt" and not args.demo and not args.no_autostart:
         import dance_cache
         dance_cache.ensure_admin()
+    instance = None
+    if os.name == "nt" and not args.demo:
+        from .single_instance import claim_instance
+        try:
+            instance = claim_instance()
+        except OSError as exc:
+            app = QApplication.instance() or QApplication(sys.argv[:1])
+            QMessageBox.critical(None, "无法启动 PyPyDance 助手", "无法检查程序是否已在运行。\n\n" + str(exc))
+            return 1
+        if instance is None:
+            return 0
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setOrganizationName("Xiaoyu12-CPU")
     app.setApplicationName("PyPyDanceCache")
@@ -818,3 +902,5 @@ def main(argv=None):
             controller.dispose()
         if temporary:
             temporary.cleanup()
+        if instance is not None:
+            instance.close()
