@@ -19,7 +19,7 @@ class DanceCacheApp:
     def __init__(self, root):
         self.root = root
         root.title("VRChat PyPyDance助手 V1.11")
-        root.geometry("880x900")
+        root.geometry("880x860")
         root.minsize(700, 640)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -42,19 +42,19 @@ class DanceCacheApp:
         top = ttk.Frame(self.root, padding=8)
         top.pack(fill=tk.X)
 
-        self.stats_label = ttk.Label(top, text="缓存: -")
-        self.stats_label.pack(side=tk.LEFT)
-
         style = ttk.Style()
         style.configure("Big.TButton", font=("", 12, "bold"), padding=(18, 8))
         style.configure("CD.TButton", font=("", 12, "bold"), padding=(18, 8), foreground="#003399")
 
+        # 右栏：状态 → 启停 → Cool Down（全部顶对齐）
         right = ttk.Frame(top)
-        right.pack(side=tk.RIGHT)
+        right.pack(side=tk.RIGHT, anchor="n")
+        self.state_label = ttk.Label(right, text="● 已停止", foreground="gray", font=("", 12, "bold"))
+        self.state_label.pack(anchor="e")
         self.toggle_btn = ttk.Button(right, text="停止服务", command=self.toggle_service, style="Big.TButton")
-        self.toggle_btn.pack(fill=tk.X)
+        self.toggle_btn.pack(fill=tk.X, pady=(4, 0))
         cd_row = ttk.Frame(right)
-        cd_row.pack(fill=tk.X, pady=(20, 0))
+        cd_row.pack(fill=tk.X, pady=(28, 0))
         self.cooldown_btn = ttk.Button(cd_row, text="Cool Down", command=self.cooldown_toggle, style="CD.TButton")
         self.cooldown_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         help_lbl = ttk.Label(cd_row, text="这是什么？", foreground="gray", font=("", 8))
@@ -64,18 +64,19 @@ class DanceCacheApp:
                              "你本地会自动播放自己选的放松视频（只影响你自己的画面，\n"
                              "放完自动恢复，只生效一次）。\n"
                              "放松视频在下方 高级设置 →【选择cool down视频】里设置。")
-        self.state_label = ttk.Label(top, text="● 已停止", foreground="gray", font=("", 12, "bold"))
-        self.state_label.pack(side=tk.RIGHT, padx=12)
 
-        btns = ttk.Frame(self.root, padding=(8, 0, 8, 4))
-        btns.pack(fill=tk.X)
-        btn_row1 = ttk.Frame(btns)
-        btn_row1.pack(fill=tk.X, pady=1)
+        # 左栏：统计 → 目录按钮（全部顶对齐）
+        left = ttk.Frame(top)
+        left.pack(side=tk.LEFT, anchor="n", fill=tk.X, expand=True)
+        self.stats_label = ttk.Label(left, text="缓存: -", anchor="w")
+        self.stats_label.pack(anchor="w")
+        btn_row1 = ttk.Frame(left)
+        btn_row1.pack(anchor="w", pady=(10, 0))
         ttk.Button(btn_row1, text="打开缓存目录",
                    command=lambda: os.startfile(dc._config["cache_dir"])).pack(side=tk.LEFT)
         ttk.Button(btn_row1, text="清空缓存目录", command=self.clear_cache).pack(side=tk.LEFT, padx=4)
-        btn_row2 = ttk.Frame(btns)
-        btn_row2.pack(fill=tk.X, pady=1)
+        btn_row2 = ttk.Frame(left)
+        btn_row2.pack(anchor="w", pady=(4, 0))
         ttk.Button(btn_row2, text="打开本地视频库", command=self.open_yt_dir).pack(side=tk.LEFT)
 
         cfg = ttk.LabelFrame(self.root, text="设置", padding=6)
