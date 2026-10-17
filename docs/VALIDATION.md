@@ -2,7 +2,61 @@
 
 日期：2026-10-17。开发基线：`5efd712073d696e180ffeedfbfe51afd293f702e`。
 
-## 本轮结果
+## 本机复验：2026-10-17，macOS
+
+本节为 Codex 接手后在本机实际执行的结果，与下面保留的历史 Linux 记录分开。
+
+- 环境：macOS 27.0.1、Apple Silicon arm64、Python 3.12.14、PySide6-Essentials / Qt 6.12.0、Pillow 12.3.0。
+- 工作区原先为空 Git 仓库，没有已有源码、提交或修改。核验本机 `gh` 账号为 `Xiaoyu12-CPU`，目标 Fork 有 push 权限；Git HTTPS 使用该 `gh` 账号的凭据帮助程序。
+- 从 `origin/main` 的 `5efd712073d696e180ffeedfbfe51afd293f702e` 创建 `ui-redesign`，用 `git am` 恢复交接补丁；恢复提交为 `bdaba2c86072a17ce18a353c54349f25cb621dfe`。补丁原提交 `125489bddaeda3fb6dc72c8f3422533a484ab3d6` 未当作远程可用提交。
+- 交接目录全部 SHA-256 校验通过，恢复后的 36 个文件与源码 ZIP 逐字节一致。随后只修正扩大范围测速的抽样文案，并更新本记录及设置页截图；四页布局、默认浅色方案与核心技术路线保持原实现。
+
+### 自动化测试
+
+在项目独立 `.venv` 中执行完整测试，Qt 使用 `offscreen`：
+
+```sh
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
+```
+
+| 测试组 | 实际执行 | 通过 | 失败 / 错误 | 跳过 |
+| --- | ---: | ---: | ---: | ---: |
+| 核心 | 39 | 39 | 0 | 0 |
+| 主题存储 | 15 | 15 | 0 | 0 |
+| Qt 界面集成 | 14 | 14 | 0 | 0 |
+| 合计 | **68** | **68** | **0** | **0** |
+
+恢复后和文案修正后各完整运行一次，耗时分别为 5.296 秒、3.736 秒，两次退出码均为 0。以上是 68 个测试用例的结果，不把两次运行合并称为 136 个用例。`pip check` 未发现依赖冲突。
+
+另外以 AST 解析 15 个受版本控制的 Python/spec 文件，以及构建脚本内 3 段 Python，均通过。没有执行 PowerShell 或 Windows 构建。核心 diff 审阅未确认新增实质回归，但隔离测试与代码审阅不能代替真实视频请求。
+
+### `--demo` 界面与外观保存
+
+实际启动 `dance_cache_gui.py --demo --state-dir PATH` 的入口，通过本地临时 Qt 检查脚本，在两个独立进程中运行。使用原生 `cocoa` 平台、1100 × 810 逻辑窗口、2× DPR，并抓取真实 Qt 窗口图像。
+
+1. 首次启动核对默认浅色和四个导航页面；逐页生成截图，核对中文、日文、列表和滚动区域。
+2. 经外观控件切换深色、将强调色改为 `#42A5F5`，设置 125% 缩放、紧凑密度、默认展开日志。
+3. 将圆角滑块改为 18，并在 60ms 延迟保存前立即正常关闭；退出后读回文件确认圆角已保存。
+4. 第二个进程从同一状态目录启动，确认上述主题、配色、圆角、缩放、密度和日志偏好恢复；再切回浅色，确认浅色配色独立、全局阅读偏好保留。
+
+两阶段检查均通过。真实核心操作均设为禁止调用的替身，调用次数为 0；工作区没有产生 `config.json` 或 `mapping.json`，未启动缓存服务、修改 hosts 或接入 VRChat。个人外观和测试产物只保存在忽略的 `.ui-state/` 下，未提交。
+
+另运行 `tools/capture_ui.py` 生成六张 1100 × 920 离屏演示截图并检查四页及深色画面。`docs/screenshots/settings.png` 更新为本机生成、使用系统可用字体的抽样测速文案版本；其余随包截图保留历史版本，没有分发系统字体。
+
+辅助检查限制：本机桌面自动化无法连接普通 Python 窗口，临时应用启动器连接亦超时，因此没有完成外部鼠标/键盘交互验收；以上 Cocoa 检查由 Qt 事件循环驱动。临时检查脚本首次因括号语法错误未启动，修正后两阶段均通过，此问题不是项目测试失败。测试日志另有字体别名提示、原生演示有 macOS IMK mach-port 警告，进程与断言均正常完成。
+
+### 本次仍未执行
+
+- 原生 Windows 的 UAC、80/443 端口、真实服务启停与 hosts 恢复/失败重试。
+- VRChat、CDN、YouTube 的实际请求、命中、后台保存，以及旧配置、映射和真实曲库兼容验收。
+- Windows 系统 125%/150% 缩放、原生文件对话框、长标题和长路径完整交互。
+- Windows exe 构建、随包 Qt 插件与资源、产物启动和分发验证；没有可发布 exe，也未创建 Release。
+
+下一步在原生 Windows 独立测试目录中，先运行相同测试与 `--demo`，再验证真实服务和旧数据，最后构建并验收完整 onedir 产物。
+
+## 历史隔离环境结果（交接包记录）
 
 在 Linux / Python 3.12、PySide6-Essentials 6.12.0、Pillow 12.3.0 环境运行，Qt 使用 `offscreen` 平台。
 
@@ -29,9 +83,9 @@ python -m unittest discover -s tests -v
 
 没有安装 Qt/Pillow 时，GUI 集成测试会跳过；只有包含 GUI 测试的完整运行才对应本记录。
 
-## 界面截图
+## 历史截图与截图工具
 
-`docs/screenshots/` 是实际程序使用演示数据的渲染结果，尺寸为 1100 × 920。截图环境额外载入 Noto Sans SC 字体；字体没有打入源码或程序包，Windows 优先使用 Microsoft YaHei UI。
+原交接包的 `docs/screenshots/` 是实际程序使用演示数据的渲染结果，尺寸为 1100 × 920。历史截图环境额外载入 Noto Sans SC 字体；字体没有打入源码或程序包，Windows 优先使用 Microsoft YaHei UI。本次替换的设置页截图环境见上方本机复验记录。
 
 ```powershell
 python tools/capture_ui.py --output docs/screenshots

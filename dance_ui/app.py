@@ -434,7 +434,7 @@ class MainWindow(QMainWindow, Pages):
         self.cancel_maintenance_button.setEnabled(False)
 
     def start_scan(self, full):
-        if full and QMessageBox.question(self, "完整扫描 CDN", "完整扫描会连接更多 CDN 地址并下载测试数据，可能需要数分钟。现在开始？",
+        if full and QMessageBox.question(self, "扩大范围测速（抽样）", "将从更大范围的 CDN IP 中抽样连接并下载测试数据，不会穷举全部 IP，可能需要数分钟。现在开始？",
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                          QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
@@ -444,7 +444,7 @@ class MainWindow(QMainWindow, Pages):
         self._scan_results = []
         self.scan_table.setRowCount(0)
         self.scan_table.hide()
-        self.scan_status.setText("正在扫描和测速，请稍候…" if full else "正在测试候选 CDN 地址…")
+        self.scan_status.setText("正在扩大范围抽样测速，请稍候…" if full else "正在测试候选 CDN 地址…")
         self.controller.scan(full=full)
 
     def finish_scan(self, results):
@@ -613,7 +613,7 @@ class MainWindow(QMainWindow, Pages):
             self.controller.refresh_stats()
         elif kind == "speedtest_result":
             self._scan_results.append(data)
-            self.scan_status.setText(f"已测试 {len(self._scan_results)} 个地址，测速继续进行…")
+            self.scan_status.setText(f"已测试 {len(self._scan_results)} 个地址，测速继续进行；扩大范围测速仅抽样，不穷举全部 IP。")
         elif kind == "speedtest_done":
             self.finish_scan(data.get("results"))
 
