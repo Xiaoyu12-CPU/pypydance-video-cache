@@ -54,7 +54,7 @@ class DanceCacheApp:
         self.toggle_btn = ttk.Button(right, text="停止服务", command=self.toggle_service, style="Big.TButton")
         self.toggle_btn.pack(fill=tk.X)
         cd_row = ttk.Frame(right)
-        cd_row.pack(fill=tk.X, pady=(4, 0))
+        cd_row.pack(fill=tk.X, pady=(20, 0))
         self.cooldown_btn = ttk.Button(cd_row, text="Cool Down", command=self.cooldown_toggle, style="CD.TButton")
         self.cooldown_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         help_lbl = ttk.Label(cd_row, text="这是什么？", foreground="gray", font=("", 8))
